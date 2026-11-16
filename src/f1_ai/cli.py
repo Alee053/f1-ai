@@ -16,7 +16,7 @@ from f1_ai.evaluation import evaluate_agents
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description="Agente PPO de carreras 2D, SIS-252")
-    root.add_argument("--config", type=Path, default=Path("configs/ppo.toml"))
+    root.add_argument("--config", type=Path, default=None)
     commands = root.add_subparsers(dest="command", required=True)
     commands.add_parser("check", help="Comprobar el contrato de Gymnasium y las particiones")
     benchmark = commands.add_parser("benchmark", help="Medir pasos físicos sin renderizado")
@@ -70,6 +70,17 @@ def parser() -> argparse.ArgumentParser:
     replay.add_argument("--model", type=Path, required=True)
     replay.add_argument("--output", type=Path, required=True)
     replay.add_argument("--seed", type=int, default=100)
+    play = commands.add_parser("play", help="Conducir con mando Xbox o teclado y ajustar la física")
+    play.add_argument("--seed", type=int, default=0)
+    play.add_argument("--output", type=Path)
+    play.add_argument("--controller", type=int)
+    play.add_argument("--deadzone", type=float, default=0.08)
+    play.add_argument("--steering-curve", type=float, default=1.6)
+    play.add_argument(
+        "--frames", type=int, help="Limitar cuadros para comprobaciones de la interfaz"
+    )
+    play.add_argument("--headless", action="store_true")
+    commands.add_parser("controllers", help="Listar mandos detectados por SDL2")
     return root
 
 
@@ -97,7 +108,7 @@ def run_benchmark(config, args):
         raise ValueError("El número de pasos debe ser positivo.")
     output = create_directory(args.output)
     env = make_env(replace(config.environment, max_steps=max(args.steps + 1, 3000)))
-    agent = PursuitAgent()
+    agent = PursuitAgent(environment=config.environment)
     resets = 0
     started = time.perf_counter()
     try:
@@ -157,6 +168,7 @@ def run_evaluate(config, args):
             factories[name] = lambda seed: PursuitAgent(
                 args.reference_speed,
                 args.reference_lateral_acceleration,
+                environment=config.environment,
             )
         elif name in learned:
             factories[name] = lambda seed: PPOAgent(model)
@@ -195,7 +207,15 @@ def run_evaluate(config, args):
 def main():
     args = parser().parse_args()
     try:
-        config = load_config(args.config)
+        if args.command == "controllers":
+            from f1_ai.controls import connected_controllers
+
+            print(json.dumps(connected_controllers(), indent=2))
+            return
+        config_path = args.config or Path(
+            "configs/formula.toml" if args.command == "play" else "configs/ppo.toml"
+        )
+        config = load_config(config_path)
         if args.command in {"train", "clone"} and getattr(args, "seed", None) is not None:
             config = replace(config, ppo=replace(config.ppo, seed=args.seed))
         if getattr(args, "timesteps", None) is not None:
@@ -203,6 +223,24 @@ def main():
                 raise ValueError("La prueba smoke fija su propio número de pasos.")
             config = replace(config, ppo=replace(config.ppo, total_timesteps=args.timesteps))
         match args.command:
+            case "play":
+                from f1_ai.manual import run_manual
+
+                print(
+                    json.dumps(
+                        run_manual(
+                            config,
+                            seed=args.seed,
+                            output=args.output,
+                            controller_index=args.controller,
+                            deadzone=args.deadzone,
+                            exponent=args.steering_curve,
+                            max_frames=args.frames,
+                            headless=args.headless,
+                        ),
+                        indent=2,
+                    )
+                )
             case "check":
                 run_check(config)
             case "benchmark":

@@ -50,7 +50,7 @@ def collect_dataset(
     if not 0 <= expert_probability <= 1:
         raise ValueError("La probabilidad de usar al experto debe pertenecer a [0, 1].")
     rng = np.random.default_rng(config.ppo.seed)
-    teacher = PursuitAgent(target_speed, lateral_acceleration)
+    teacher = PursuitAgent(target_speed, lateral_acceleration, environment=config.environment)
     student = PPOAgent(model) if model is not None else None
     env = make_env(config.environment)
     observations, actions, seeds = [], [], []

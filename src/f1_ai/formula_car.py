@@ -150,13 +150,13 @@ class FormulaCar(Car):
                         / 2
                         / max(abs(wheel.omega), 1.0),
                     )
+                power_w += drive_torque * abs(wheel.omega) / steps
                 free_omega = (
                     wheel.omega
                     + interval * (drive_torque - fx * wheel.wheel_rad) / config.wheel_inertia_kg_m2
                 )
                 brake_delta = interval * brake_torque / config.wheel_inertia_kg_m2
                 wheel.omega = math.copysign(max(0.0, abs(free_omega) - brake_delta), free_omega)
-                power_w += drive_torque * abs(wheel.omega) / steps
                 fx_sum += fx / steps
                 fy_sum += fy / steps
             wheel.phase += wheel.omega * dt

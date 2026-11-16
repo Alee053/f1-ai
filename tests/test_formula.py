@@ -141,3 +141,44 @@ def test_formula_profile_works_through_gymnasium_and_serialization():
         assert env.surf is None
     finally:
         env.close()
+
+
+def test_reference_controller_uses_the_profiles_units_and_wheelbase():
+    from f1_ai.agents import PursuitAgent
+
+    classic = EnvironmentConfig()
+    formula = EnvironmentConfig(
+        vehicle_model="formula-v1",
+        steering_scale=0.4,
+        forward_speed_scale=100,
+        formula=replace(FormulaConfig(), wheelbase_m=3.24),
+    )
+    first = np.zeros(16, dtype=np.float32)
+    first[0] = 15 / 60
+    first[8:] = np.array([1, 8, 2, 16, 4, 32, 8, 48]) / 50
+    second = first.copy()
+    second[0] = 15 / 100
+    np.testing.assert_allclose(
+        PursuitAgent(environment=classic).action(first),
+        PursuitAgent(environment=formula).action(second),
+        atol=1e-6,
+    )
+
+
+def test_aggregate_wheel_power_stays_within_engine_budget():
+    config = FormulaConfig()
+    physics_world, car = flat_car(config)
+    try:
+        car.gas(1)
+        peak_power = 0.0
+        for _ in range(500):
+            advance(physics_world, car, 1)
+            peak_power = max(peak_power, car.telemetry["wheel_power_kw"])
+            assert (
+                0
+                <= car.telemetry["wheel_power_kw"]
+                <= config.power_kw * config.drivetrain_efficiency * (1 + 1e-12)
+            )
+        assert peak_power > 0.9 * config.power_kw * config.drivetrain_efficiency
+    finally:
+        car.destroy()
