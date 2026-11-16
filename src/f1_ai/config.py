@@ -2,6 +2,7 @@
 
 import tomllib
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 
 
@@ -12,7 +13,10 @@ class EnvironmentConfig:
     minimum_coverage: float = 0.95
 
     def __post_init__(self):
-        if self.max_steps <= 0 or self.off_track_grace_steps <= 0:
+        if any(
+            type(value) is not int or value <= 0
+            for value in (self.max_steps, self.off_track_grace_steps)
+        ):
             raise ValueError("Los límites de pasos deben ser positivos.")
         if not 0 < self.minimum_coverage <= 1:
             raise ValueError("La cobertura mínima debe pertenecer a (0, 1].")
@@ -72,8 +76,10 @@ class PPOConfig:
             raise ValueError("La tasa de aprendizaje debe pertenecer a (0, 1).")
         if not 0 < self.gamma <= 1 or not 0 <= self.gae_lambda <= 1:
             raise ValueError("gamma y gae_lambda no pertenecen al intervalo permitido.")
-        if self.ent_coef < 0 or self.seed < 0:
-            raise ValueError("La entropía y la semilla no pueden ser negativas.")
+        if not isfinite(self.ent_coef) or self.ent_coef < 0:
+            raise ValueError("La entropía debe ser finita y no negativa.")
+        if type(self.seed) is not int or self.seed < 0:
+            raise ValueError("La semilla debe ser un entero no negativo.")
 
 
 @dataclass(frozen=True)

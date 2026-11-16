@@ -2,6 +2,7 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
+from gymnasium.envs.box2d.car_racing import CarRacing
 from gymnasium.utils.env_checker import check_env
 
 from f1_ai.config import EnvironmentConfig, load_config
@@ -69,3 +70,32 @@ def test_train_and_validation_circuits_cannot_overlap():
     config = load_config("configs/ppo.toml")
     with pytest.raises(ValueError, match="repetirse"):
         replace(config.circuits, validation=(config.circuits.train[0],))
+
+
+def test_numeric_adapter_preserves_native_physics_and_native_reward():
+    numeric = make_env(EnvironmentConfig())
+    native = CarRacing()
+    try:
+        numeric.reset(seed=3)
+        native.reset(seed=3)
+        for _ in range(20):
+            _, _, _, _, info = numeric.step(np.array([0.1, 0.5], dtype=np.float32))
+            _, reward, _, _, _ = native.step(np.array([0.1, 0.5, 0.0], dtype=np.float32))
+            np.testing.assert_allclose(numeric.car.hull.position, native.car.hull.position)
+            assert info["native_reward"] == pytest.approx(reward)
+    finally:
+        numeric.close()
+        native.close()
+
+
+def test_leaving_playfield_is_failure_not_success():
+    env = make_env(EnvironmentConfig())
+    try:
+        env.reset(seed=0)
+        env.car.hull.position = (100000, 100000)
+        _, _, terminated, truncated, info = env.step(np.zeros(2, dtype=np.float32))
+        assert terminated and not truncated
+        assert info["termination_reason"] == "out_of_bounds"
+        assert not info["lap_complete"]
+    finally:
+        env.close()

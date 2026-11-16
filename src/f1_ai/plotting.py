@@ -1,0 +1,67 @@
+"""Figuras exportables a partir de las mediciones, sin datos inventados."""
+
+import csv
+import json
+from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+
+COLORS = {"random": "#9b4a40", "pursuit": "#236b61", "ppo": "#304f8d"}
+LABELS = {"random": "Aleatorio", "pursuit": "Pure pursuit", "ppo": "PPO"}
+
+
+def plot_evaluation(directory: Path) -> list[Path]:
+    with (directory / "results.json").open(encoding="utf-8") as stream:
+        results = json.load(stream)
+    names = list(results["summaries"])
+    fig, axes = plt.subplots(1, 2, figsize=(8, 3.2), layout="constrained")
+    for index, name in enumerate(names):
+        episodes = [episode for episode in results["episodes"] if episode["agent"] == name]
+        coverage = [episode["coverage"] * 100 for episode in episodes]
+        axes[0].scatter([index] * len(coverage), coverage, color=COLORS[name], s=32)
+        axes[0].plot(
+            [index - 0.15, index + 0.15], [np.mean(coverage)] * 2, color=COLORS[name], linewidth=2
+        )
+        axes[1].bar(index, 100 * results["summaries"][name]["completion_rate"], color=COLORS[name])
+    for axis, title in zip(axes, ["Cobertura por circuito", "Vueltas completadas"], strict=True):
+        axis.set_xticks(range(len(names)), [LABELS[name] for name in names])
+        axis.set_ylim(-2, 105)
+        axis.set_ylabel("Porcentaje")
+        axis.set_title(title, fontsize=11)
+        axis.spines[["top", "right"]].set_visible(False)
+        axis.grid(axis="y", alpha=0.2)
+        axis.set_axisbelow(True)
+    fig.savefig(directory / "comparison.png", dpi=200)
+    plt.close(fig)
+
+    first_seed = results["episodes"][0]["circuit_seed"]
+    with (directory / f"track-{first_seed}.json").open() as stream:
+        points = np.array(json.load(stream))
+    points = np.vstack((points, points[0]))
+    fig, axis = plt.subplots(figsize=(6.5, 4.2), layout="constrained")
+    axis.plot(points[:, 0], points[:, 1], color="#c6c6c6", linewidth=9, label="Circuito")
+    axis.plot(points[:, 0], points[:, 1], color="white", linewidth=0.6, linestyle="--")
+    for name in names:
+        with (directory / f"trajectory-{name}-{first_seed}.csv").open() as stream:
+            rows = list(csv.DictReader(stream))
+        axis.plot(
+            [float(row["x"]) for row in rows],
+            [float(row["y"]) for row in rows],
+            color=COLORS[name],
+            linewidth=1.3,
+            label=LABELS[name],
+        )
+    axis.scatter(*points[0], marker="s", s=30, color="black", label="Inicio")
+    axis.set_aspect("equal")
+    axis.set_xlabel("Posición x en unidades del simulador")
+    axis.set_ylabel("Posición y en unidades del simulador")
+    axis.set_title(f"Trayectorias medidas en el circuito {first_seed}", fontsize=11)
+    axis.legend(fontsize=8, loc="best")
+    axis.spines[["top", "right"]].set_visible(False)
+    fig.savefig(directory / "trajectories.png", dpi=200)
+    plt.close(fig)
+    return [directory / "comparison.png", directory / "trajectories.png"]
