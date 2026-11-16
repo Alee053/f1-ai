@@ -146,7 +146,6 @@ def test_formula_profile_works_through_gymnasium_and_serialization():
 def test_reference_controller_uses_the_profiles_units_and_wheelbase():
     from f1_ai.agents import PursuitAgent
 
-    classic = EnvironmentConfig()
     formula = EnvironmentConfig(
         vehicle_model="formula-v1",
         steering_scale=0.4,
@@ -154,15 +153,51 @@ def test_reference_controller_uses_the_profiles_units_and_wheelbase():
         formula=replace(FormulaConfig(), wheelbase_m=3.24),
     )
     first = np.zeros(16, dtype=np.float32)
-    first[0] = 15 / 60
+    first[0] = 15 / 100
     first[8:] = np.array([1, 8, 2, 16, 4, 32, 8, 48]) / 50
     second = first.copy()
-    second[0] = 15 / 100
+    second[0] = 15 / 60
+    agent = PursuitAgent(environment=formula)
     np.testing.assert_allclose(
-        PursuitAgent(environment=classic).action(first),
-        PursuitAgent(environment=formula).action(second),
+        agent.action(first),
+        PursuitAgent(environment=replace(formula, forward_speed_scale=60)).action(second),
         atol=1e-6,
     )
+    longer = replace(formula, formula=replace(formula.formula, wheelbase_m=4.0))
+    assert PursuitAgent(environment=longer).action(first)[0] > agent.action(first)[0]
+
+
+def test_formula_reference_doses_power_and_compensates_drag_at_target_speed():
+    from f1_ai.agents import PursuitAgent
+
+    config = load_config("configs/formula.toml").environment
+    agent = PursuitAgent(target_speed=28, lateral_acceleration=12, environment=config)
+    observation = np.zeros(16, dtype=np.float32)
+    observation[8:] = np.array([0, 8, 0, 16, 0, 32, 0, 48]) / 50
+    launch = agent.action(observation)
+    assert launch[0] == 0
+    assert 0 < launch[1] < 0.5
+    observation[0] = 28 / config.forward_speed_scale
+    cruise = agent.action(observation)
+    assert 0 < cruise[1] < launch[1]
+    observation[0] = 50 / config.forward_speed_scale
+    assert -0.4 <= agent.action(observation)[1] < 0
+
+
+def test_formula_reference_completes_a_training_circuit_without_leaving_road():
+    from f1_ai.agents import PursuitAgent
+    from f1_ai.evaluation import evaluate_episode
+
+    config = replace(load_config("configs/formula.toml").environment, max_steps=6000)
+    result = evaluate_episode(
+        config,
+        PursuitAgent(target_speed=28, lateral_acceleration=12, environment=config),
+        0,
+        agent_name="pursuit",
+    )
+    assert result["lap_complete"]
+    assert result["off_track_steps"] == 0
+    assert result["lap_time_seconds"] < 65
 
 
 def test_aggregate_wheel_power_stays_within_engine_budget():
