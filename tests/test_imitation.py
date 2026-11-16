@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 import pytest
 import torch
@@ -20,8 +22,10 @@ def test_validation_circuits_cannot_enter_imitation_dataset():
         validate_dataset(data, config)
 
 
-def test_actor_learns_real_demonstrations_without_changing_critic():
+@pytest.mark.parametrize("bounded", [False, True])
+def test_actor_learns_real_demonstrations_without_changing_critic(bounded):
     config = load_config("configs/ppo.toml")
+    config = replace(config, ppo=replace(config.ppo, use_sde=bounded, squash_output=bounded))
     env = make_env(config.environment)
     torch.set_num_threads(1)
     try:

@@ -157,6 +157,8 @@ def fit_actor(
         total = 0.0
         for indices in order.split(batch_size):
             mean = model.policy.get_distribution(observations[indices]).distribution.mean
+            if model.policy.squash_output:
+                mean = torch.tanh(mean)
             loss = F.mse_loss(mean, actions[indices])
             optimizer.zero_grad()
             loss.backward()

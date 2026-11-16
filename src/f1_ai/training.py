@@ -39,9 +39,12 @@ def create_model(config: ExperimentConfig, env: Env | VecEnv) -> PPO:
         ent_coef=settings.ent_coef,
         clip_range=settings.clip_range,
         target_kl=settings.target_kl,
+        use_sde=settings.use_sde,
+        sde_sample_freq=settings.sde_sample_freq,
         policy_kwargs={
             "net_arch": {"pi": [settings.hidden_size] * 2, "vf": [settings.hidden_size] * 2},
             "log_std_init": settings.log_std_init,
+            "squash_output": settings.squash_output,
         },
     )
 

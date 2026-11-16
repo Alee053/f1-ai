@@ -66,6 +66,9 @@ class PPOConfig:
     reward_scale: float = 1.0
     clip_range: float = 0.2
     target_kl: float | None = None
+    use_sde: bool = False
+    sde_sample_freq: int = -1
+    squash_output: bool = False
 
     def __post_init__(self):
         integers = (
@@ -98,6 +101,16 @@ class PPOConfig:
             raise ValueError("Las escalas de recompensa y recorte deben pertenecer a (0, 1].")
         if self.target_kl is not None and not 0 < self.target_kl < 1:
             raise ValueError("target_kl debe ser None o pertenecer a (0, 1).")
+        if type(self.use_sde) is not bool or type(self.squash_output) is not bool:
+            raise ValueError("use_sde y squash_output deben ser booleanos.")
+        if self.squash_output and not self.use_sde:
+            raise ValueError("La salida acotada de esta política requiere use_sde.")
+        if (
+            type(self.sde_sample_freq) is not int
+            or self.sde_sample_freq < -1
+            or self.sde_sample_freq == 0
+        ):
+            raise ValueError("sde_sample_freq debe ser -1 o un entero positivo.")
 
 
 @dataclass(frozen=True)

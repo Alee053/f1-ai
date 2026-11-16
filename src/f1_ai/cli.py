@@ -28,12 +28,16 @@ def parser() -> argparse.ArgumentParser:
     )
     evaluate.add_argument("--split", choices=["train", "validation", "test"], default="validation")
     evaluate.add_argument("--output", type=Path, required=True)
+    evaluate.add_argument("--reference-speed", type=float, default=30.0)
+    evaluate.add_argument("--reference-lateral-acceleration", type=float, default=8.0)
     evaluate.add_argument(
         "--model", type=Path, help="Checkpoint local de confianza con metadata.json"
     )
     training = commands.add_parser("train", help="Entrenar PPO o ejecutar una prueba de 512 pasos")
     training.add_argument("--smoke", action="store_true", help="Prueba de integración de 512 pasos")
     training.add_argument("--output", type=Path, required=True)
+    training.add_argument("--seed", type=int)
+    training.add_argument("--timesteps", type=int)
     training.add_argument(
         "--initial-model", type=Path, help="Inicializar pesos desde un modelo compatible"
     )
@@ -55,6 +59,7 @@ def parser() -> argparse.ArgumentParser:
     imitation.add_argument("--epochs", type=int, default=50)
     imitation.add_argument("--learning-rate", type=float, default=1e-3)
     imitation.add_argument("--dagger-rounds", type=int, default=0)
+    imitation.add_argument("--seed", type=int)
     return root
 
 
@@ -125,7 +130,10 @@ def run_evaluate(config, args):
         if name == "random":
             factories[name] = lambda seed: RandomAgent(config.ppo.seed, seed)
         elif name == "pursuit":
-            factories[name] = lambda seed: PursuitAgent()
+            factories[name] = lambda seed: PursuitAgent(
+                args.reference_speed,
+                args.reference_lateral_acceleration,
+            )
         elif name == "ppo":
             factories[name] = lambda seed: PPOAgent(model)
     write_json(
@@ -134,6 +142,10 @@ def run_evaluate(config, args):
             **provenance(config, kind="evaluation"),
             "split": args.split,
             "agents": args.agents,
+            "reference": {
+                "target_speed": args.reference_speed,
+                "lateral_acceleration": args.reference_lateral_acceleration,
+            },
             "model_sha256": hashlib.sha256(args.model.read_bytes()).hexdigest()
             if args.model is not None
             else None,
@@ -152,6 +164,12 @@ def main():
     args = parser().parse_args()
     try:
         config = load_config(args.config)
+        if getattr(args, "seed", None) is not None:
+            config = replace(config, ppo=replace(config.ppo, seed=args.seed))
+        if getattr(args, "timesteps", None) is not None:
+            if args.smoke:
+                raise ValueError("La prueba smoke fija su propio número de pasos.")
+            config = replace(config, ppo=replace(config.ppo, total_timesteps=args.timesteps))
         match args.command:
             case "check":
                 run_check(config)
