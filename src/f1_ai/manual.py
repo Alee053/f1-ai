@@ -179,7 +179,8 @@ def draw_track(surface, session: ManualSession):
     translation = (width / 2 - rotated_position.x * zoom, height * 0.23 - rotated_position.y * zoom)
 
     def transform(point):
-        p = pygame.math.Vector2(point).rotate_rad(angle)
+        # Pygame 2.6 no acepta directamente filas ndarray de NumPy 2.5.
+        p = pygame.math.Vector2(float(point[0]), float(point[1])).rotate_rad(angle)
         return (p.x * zoom + translation[0], p.y * zoom + translation[1])
 
     for polygon, color in env.road_poly:

@@ -110,3 +110,21 @@ def test_manual_headless_renders_and_saves_complete_configuration(tmp_path: Path
     assert result["frames"] == 2
     assert (output / "last-frame.png").stat().st_size > 1000
     assert load_config(output / "last-config.toml").environment.vehicle_model == "formula-v1"
+
+
+def test_reference_guide_renders_numpy_track_coordinates(monkeypatch):
+    monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
+    pygame.display.init()
+    pygame.font.init()
+    from f1_ai.manual import draw_track
+
+    session = ManualSession(load_config("configs/formula.toml"), 0)
+    try:
+        session.command("guide")
+        surface = draw_track(pygame.Surface((600, 400)), session)
+        assert surface.get_size() == (600, 400)
+        pixels = pygame.surfarray.array3d(surface)
+        assert np.any(np.all(pixels == (150, 170, 183), axis=2))
+    finally:
+        session.close()
+        pygame.quit()
