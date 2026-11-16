@@ -36,6 +36,10 @@ def parser() -> argparse.ArgumentParser:
     training.add_argument("--output", type=Path, required=True)
     plot = commands.add_parser("plot", help="Exportar figuras de una evaluación existente")
     plot.add_argument("--evaluation", type=Path, required=True)
+    training_plot = commands.add_parser(
+        "plot-training", help="Exportar la curva de validación de PPO"
+    )
+    training_plot.add_argument("--run", type=Path, required=True)
     return root
 
 
@@ -149,6 +153,10 @@ def main():
 
                 for path in plot_evaluation(args.evaluation):
                     print(path)
+            case "plot-training":
+                from f1_ai.plotting import plot_training
+
+                print(plot_training(args.run))
     except (ValueError, TypeError, OSError) as error:
         raise SystemExit(f"Error: {error}") from error
 

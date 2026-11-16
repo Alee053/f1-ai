@@ -129,6 +129,7 @@ realizar ese experimento:
 
 ```bash
 uv run f1-ai train --output runs/ppo-500k
+uv run f1-ai plot-training --run runs/ppo-500k
 uv run f1-ai evaluate --agents random pursuit ppo --split validation \
   --model runs/ppo-500k/best_model.zip --output runs/validation-500k
 ```

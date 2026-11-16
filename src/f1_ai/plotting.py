@@ -65,3 +65,32 @@ def plot_evaluation(directory: Path) -> list[Path]:
     fig.savefig(directory / "trajectories.png", dpi=200)
     plt.close(fig)
     return [directory / "comparison.png", directory / "trajectories.png"]
+
+
+def plot_training(directory: Path) -> Path:
+    with np.load(directory / "validation" / "evaluations.npz", allow_pickle=False) as data:
+        timesteps = data["timesteps"]
+        returns = data["results"]
+    means = returns.mean(axis=1)
+    deviations = returns.std(axis=1, ddof=1)
+    fig, axis = plt.subplots(figsize=(8, 3.2), layout="constrained")
+    axis.plot(timesteps, means, color=COLORS["ppo"], label="Retorno medio en validación")
+    axis.fill_between(
+        timesteps,
+        means - deviations,
+        means + deviations,
+        color=COLORS["ppo"],
+        alpha=0.15,
+        label="Desviación estándar entre circuitos",
+    )
+    axis.set_xlabel("Interacciones de entrenamiento")
+    axis.set_ylabel("Retorno acumulado")
+    axis.set_title("PPO en los cinco circuitos de validación", fontsize=11)
+    axis.ticklabel_format(axis="x", style="plain")
+    axis.spines[["top", "right"]].set_visible(False)
+    axis.legend(fontsize=8)
+    axis.grid(alpha=0.15)
+    path = directory / "learning_curve.png"
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+    return path
