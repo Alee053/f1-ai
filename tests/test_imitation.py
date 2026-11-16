@@ -23,9 +23,14 @@ def test_validation_circuits_cannot_enter_imitation_dataset():
 
 
 @pytest.mark.parametrize("bounded", [False, True])
-def test_actor_learns_real_demonstrations_without_changing_critic(bounded):
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_actor_learns_real_demonstrations_without_changing_critic(bounded, device):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("Esta comprobación requiere una GPU CUDA.")
     config = load_config("configs/ppo.toml")
-    config = replace(config, ppo=replace(config.ppo, use_sde=bounded, squash_output=bounded))
+    config = replace(
+        config, ppo=replace(config.ppo, use_sde=bounded, squash_output=bounded, device=device)
+    )
     env = make_env(config.environment)
     torch.set_num_threads(1)
     try:

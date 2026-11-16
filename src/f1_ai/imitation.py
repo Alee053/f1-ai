@@ -142,8 +142,8 @@ def fit_actor(
 ) -> list[float]:
     if epochs < 1 or batch_size < 1 or not 0 < learning_rate < 1:
         raise ValueError("La configuración de ajuste supervisado no es válida.")
-    observations = torch.as_tensor(data["observations"], dtype=torch.float32)
-    actions = torch.as_tensor(data["actions"], dtype=torch.float32)
+    observations = torch.as_tensor(data["observations"], dtype=torch.float32, device=model.device)
+    actions = torch.as_tensor(data["actions"], dtype=torch.float32, device=model.device)
     parameters = [
         *model.policy.mlp_extractor.policy_net.parameters(),
         *model.policy.action_net.parameters(),
@@ -153,7 +153,7 @@ def fit_actor(
     losses = []
     model.policy.set_training_mode(True)
     for epoch in range(epochs):
-        order = torch.randperm(len(observations), generator=generator)
+        order = torch.randperm(len(observations), generator=generator).to(model.device)
         total = 0.0
         for indices in order.split(batch_size):
             mean = model.policy.get_distribution(observations[indices]).distribution.mean

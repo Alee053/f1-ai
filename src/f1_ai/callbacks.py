@@ -19,6 +19,8 @@ class DrivingEvaluation(BaseCallback):
         self.output = output
         self.directory = output / "validation"
         self.directory.mkdir()
+        self.checkpoints = output / "checkpoints"
+        self.checkpoints.mkdir()
         self.next_evaluation = config.ppo.eval_every
         self.history: list[dict] = []
         self.best_score: tuple | None = None
@@ -49,6 +51,8 @@ class DrivingEvaluation(BaseCallback):
             coverage=np.array([[ep["coverage"] for ep in row["episodes"]] for row in self.history]),
         )
         write_json(self.directory / f"step-{self.num_timesteps}.json", record)
+        if self.num_timesteps > 0:
+            self.model.save(self.checkpoints / f"ppo_{self.num_timesteps}_steps.zip")
         if self.best_score is None or score > self.best_score:
             self.best_score = score
             self.model.save(self.output / "best_model.zip")
@@ -68,6 +72,8 @@ class DrivingEvaluation(BaseCallback):
         )
 
     def _on_training_start(self):
+        period = self.config.ppo.eval_every
+        self.next_evaluation = (self.num_timesteps // period + 1) * period
         self._evaluate()
 
     def _on_step(self) -> bool:

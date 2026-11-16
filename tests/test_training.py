@@ -8,7 +8,12 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
+import pytest
+import torch
+
 from f1_ai.config import load_config
+from f1_ai.environment import make_env
 from f1_ai.training import load_model, train
 
 
@@ -114,3 +119,82 @@ train(config, Path(sys.argv[1]))
     config = replace(config, environment=replace(config.environment, max_steps=32))
     model = load_model(output / "interrupted_model.zip", config)
     assert model.observation_space.shape == (16,)
+
+
+@pytest.mark.parametrize(
+    "device,backend", [("cpu", "dummy"), ("cuda", "dummy"), ("cuda", "subproc")]
+)
+def test_resume_keeps_optimizer_steps_and_aligns_checkpoints(tmp_path: Path, device, backend):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("Esta comprobación requiere una GPU CUDA.")
+    config = load_config("configs/ppo.toml")
+    config = replace(
+        config,
+        environment=replace(config.environment, max_steps=32),
+        circuits=replace(config.circuits, validation=(100, 101)),
+        ppo=replace(
+            config.ppo,
+            total_timesteps=32,
+            n_envs=2,
+            n_steps=16,
+            batch_size=16,
+            n_epochs=1,
+            eval_every=32,
+        ),
+    )
+    initial = tmp_path / "before-resume"
+    train(config, initial)
+    source = load_model(initial / "model.zip", config)
+    optimizer_steps = sorted(
+        {float(state["step"]) for state in source.policy.optimizer.state.values()}
+    )
+    config = replace(
+        config, ppo=replace(config.ppo, device=device, vec_env=backend, total_timesteps=96)
+    )
+    output = tmp_path / "resumed"
+    result = train(config, output, resume_model=initial / "model.zip")
+    assert result["starting_timesteps"] == 32
+    assert result["actual_timesteps"] == 96
+    assert result["trained_timesteps"] == 64
+    assert result["policy_parameter_delta_l2"] > 0
+    assert result["save_load_predictions_identical"]
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["resume"]["optimizer_state_entries"] > 0
+    assert metadata["resume"]["optimizer_steps_at_start"] == optimizer_steps
+    assert metadata["resume"]["environment_state_restored"] is False
+    assert {torch.device(value).type for value in metadata["execution"]["optimizer_devices"]} == {
+        device
+    }
+    with np.load(output / "validation" / "evaluations.npz", allow_pickle=False) as records:
+        np.testing.assert_array_equal(records["timesteps"], [32, 64, 96])
+    assert {path.name for path in (output / "checkpoints").glob("*.zip")} == {
+        "ppo_32_steps.zip",
+        "ppo_64_steps.zip",
+        "ppo_96_steps.zip",
+    }
+    first = load_model(output / "checkpoints" / "ppo_32_steps.zip", config, device=device)
+    env = make_env(config.environment)
+    try:
+        observation, _ = env.reset(seed=config.circuits.train[0])
+        np.testing.assert_allclose(
+            source.predict(observation, deterministic=True)[0],
+            first.predict(observation, deterministic=True)[0],
+            atol=1e-6,
+        )
+    finally:
+        env.close()
+
+
+def test_cuda_request_cannot_silently_fall_back_to_cpu(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    config = load_config("configs/ppo.toml")
+    config = replace(config, ppo=replace(config.ppo, device="cuda"))
+    with pytest.raises(RuntimeError, match="solicitó CUDA"):
+        train(config, tmp_path / "unavailable", smoke=True)
+
+
+def test_device_configuration_is_explicit():
+    with pytest.raises(ValueError, match="device"):
+        replace(load_config("configs/ppo.toml").ppo, device="auto")
+    with pytest.raises(ValueError, match="vec_env"):
+        replace(load_config("configs/ppo.toml").ppo, vec_env="threads")

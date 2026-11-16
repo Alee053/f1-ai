@@ -12,9 +12,11 @@ La primera etapa incluye observaciones numéricas, un controlador de referencia,
 separación de circuitos por semillas, entrenamiento reproducible y evaluación.
 A* y el desgaste de neumáticos quedan para etapas posteriores.
 
-Se utiliza Python 3.12 y `uv`. Las dependencias se instalan en `.venv`; PyTorch usa
-la distribución CPU porque la política MLP es pequeña. No se requieren servicios
-pagados, CUDA ni instalaciones globales.
+Se utiliza Python 3.12 y `uv`. Las dependencias se instalan en `.venv`. En Linux y
+Windows se utiliza la distribución PyTorch con CUDA 13.0 del índice oficial;
+los perfiles existentes conservan CPU como dispositivo predeterminado. La ejecución
+CUDA requiere una GPU NVIDIA y un controlador compatible. No se requieren servicios
+pagados ni instalaciones globales de Python o del toolkit CUDA.
 
 Los informes y documentos permanecen en `docs/` y no se versionan. Los experimentos
 y modelos se guardan en `runs/`, también excluido de Git.
@@ -111,8 +113,11 @@ de experimentos nuevas no sobrescriben las anteriores.
 La configuración original contiene dos capas de 64 unidades para el actor y
 otras dos para el crítico. Las variantes permiten configurar ese tamaño y
 emplean 128 unidades. Los hiperparámetros y la semilla se definen en los TOML de `configs/`.
-Se usa CPU y un hilo de PyTorch. Cuatro entornos vectorizados ejecutan sus pasos
-secuencialmente mediante `DummyVecEnv`.
+El dispositivo se configura con `device="cpu"` o `device="cuda"`. Una solicitud
+CUDA falla si PyTorch no puede usar la GPU; no se sustituye silenciosamente por CPU.
+Los perfiles históricos usan un hilo de PyTorch y cuatro entornos secuenciales
+mediante `DummyVecEnv`. `vec_env="subproc"` ejecuta esos entornos en procesos
+separados con `spawn`, sin heredar el contexto CUDA. La física Box2D sigue en CPU.
 
 Para comprobar la integración sin realizar un entrenamiento prolongado:
 
@@ -145,6 +150,28 @@ se elige por vueltas completas, cobertura y tiempo, con retorno como último des
 La interrupción con Ctrl+C o SIGTERM durante el aprendizaje conserva
 `interrupted_model.zip` y registra el motivo y las interacciones en `interrupted.json`.
 Al recibir SIGTERM, el comando termina con código 143 después de guardar el modelo.
+
+Para continuar ese estado, incluso pasando de CPU a GPU:
+
+```bash
+uv run f1-ai --config configs/formula-refine-cuda.toml train \
+  --resume-model runs/formula-refine-42-2m/interrupted_model.zip \
+  --output runs/formula-refine-cuda-42-2m
+```
+
+`--resume-model` conserva el actor, el crítico, el optimizador, la exploración
+aprendida y el contador. `total_timesteps` es el presupuesto acumulado, por lo que
+solo se ejecutan los pasos restantes. Se reinician los episodios y los generadores
+aleatorios porque no se guarda el estado de Box2D. La reanudación conserva los
+hiperparámetros de aprendizaje; permite cambiar el dispositivo y el backend de
+entornos. `--initial-model` transfiere pesos e inicia un optimizador nuevo.
+Ambas opciones son excluyentes.
+
+Los metadatos registran el dispositivo real, la GPU y la ubicación de los estados
+del optimizador. Evaluación y vídeo usan el dispositivo del TOML y registran dónde
+se ejecutó la inferencia. La instalación sigue las guías oficiales de
+[PyTorch](https://pytorch.org/get-started/locally/) y
+[uv](https://docs.astral.sh/uv/guides/integration/pytorch/).
 
 Solo deben cargarse checkpoints locales de confianza: SB3 usa serialización
 que puede ejecutar código al abrir archivos de terceros. La carga también

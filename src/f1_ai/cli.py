@@ -44,8 +44,14 @@ def parser() -> argparse.ArgumentParser:
     training.add_argument("--output", type=Path, required=True)
     training.add_argument("--seed", type=int)
     training.add_argument("--timesteps", type=int)
-    training.add_argument(
+    initialization = training.add_mutually_exclusive_group()
+    initialization.add_argument(
         "--initial-model", type=Path, help="Inicializar pesos desde un modelo compatible"
+    )
+    initialization.add_argument(
+        "--resume-model",
+        type=Path,
+        help="Conservar pesos, optimizador y contador de un PPO guardado",
     )
     plot = commands.add_parser("plot", help="Exportar figuras de una evaluación existente")
     plot.add_argument("--evaluation", type=Path, required=True)
@@ -185,6 +191,7 @@ def run_evaluate(config, args):
             "model_sha256": hashlib.sha256(args.model.read_bytes()).hexdigest()
             if args.model is not None
             else None,
+            "inference_device": str(model.device) if model is not None else None,
         },
     )
     results = evaluate_agents(
@@ -257,6 +264,7 @@ def main():
                             args.output,
                             smoke=args.smoke,
                             initial_model=args.initial_model,
+                            resume_model=args.resume_model,
                         ),
                         indent=2,
                     )

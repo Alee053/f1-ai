@@ -1,4 +1,4 @@
-"""PPO reproducible en CPU, con evaluación separada y una prueba breve de integración."""
+"""PPO reproducible en CPU o CUDA, con evaluación separada y reanudación."""
 
 import hashlib
 import json
@@ -6,7 +6,7 @@ import signal
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import numpy as np
@@ -14,14 +14,13 @@ import torch
 from gymnasium import Env
 from gymnasium.wrappers import TransformReward
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv
 
 from f1_ai.artifacts import create_directory, provenance, write_json
 from f1_ai.callbacks import DrivingEvaluation
-from f1_ai.config import EnvironmentConfig, ExperimentConfig
+from f1_ai.config import EnvironmentConfig, ExperimentConfig, PPOConfig
 from f1_ai.environment import OBSERVATION_VERSION, CircuitPool, make_env
 
 
@@ -47,13 +46,21 @@ def _interrupt_on_sigterm():
         signal.signal(signal.SIGTERM, previous_handler)
 
 
+def require_device(device: str) -> str:
+    if device not in {"cpu", "cuda"}:
+        raise ValueError("El dispositivo debe ser cpu o cuda.")
+    if device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("Se solicitó CUDA, pero PyTorch no puede utilizar la GPU.")
+    return device
+
+
 def create_model(config: ExperimentConfig, env: Env | VecEnv) -> PPO:
     settings = config.ppo
     return PPO(
         "MlpPolicy",
         env,
         seed=settings.seed,
-        device="cpu",
+        device=require_device(settings.device),
         verbose=0,
         n_steps=settings.n_steps,
         batch_size=settings.batch_size,
@@ -74,13 +81,50 @@ def create_model(config: ExperimentConfig, env: Env | VecEnv) -> PPO:
     )
 
 
+def make_training_envs(config: ExperimentConfig) -> VecEnv:
+    settings = config.ppo
+
+    def training_environment():
+        return TransformReward(
+            Monitor(CircuitPool(make_env(config.environment), config.circuits.train, shuffle=True)),
+            lambda reward: float(reward) * settings.reward_scale,
+        )
+
+    factories = [training_environment for _ in range(settings.n_envs)]
+    # spawn evita heredar un contexto CUDA al crear los procesos de física.
+    return (
+        SubprocVecEnv(factories, start_method="spawn")
+        if settings.vec_env == "subproc"
+        else DummyVecEnv(factories)
+    )
+
+
 def train(
     config: ExperimentConfig,
     output: Path,
     *,
     smoke: bool = False,
     initial_model: Path | None = None,
+    resume_model: Path | None = None,
 ) -> dict:
+    if initial_model is not None and resume_model is not None:
+        raise ValueError("Elija inicialización de pesos o reanudación, no ambas.")
+    if resume_model is not None:
+        if smoke:
+            raise ValueError("La prueba smoke no permite reanudar un entrenamiento.")
+        source_metadata = read_model_metadata(resume_model)
+        if source_metadata["kind"] != "ppo":
+            raise ValueError("La reanudación requiere un checkpoint de entrenamiento PPO.")
+        recorded = asdict(PPOConfig(**source_metadata["configuration"]["ppo"]))
+        requested = asdict(config.ppo)
+        runtime_fields = {"device", "vec_env", "torch_threads", "total_timesteps", "eval_every"}
+        if any(
+            recorded[key] != value for key, value in requested.items() if key not in runtime_fields
+        ):
+            raise ValueError(
+                "Reanudar conserva los hiperparámetros; para cambiarlos use --initial-model."
+            )
+    require_device(config.ppo.device)
     if smoke:
         config = replace(
             config,
@@ -97,27 +141,15 @@ def train(
     output = create_directory(output)
     settings = config.ppo
     torch.set_num_threads(settings.torch_threads)
-    envs = DummyVecEnv(
-        [
-            lambda: TransformReward(
-                Monitor(
-                    CircuitPool(
-                        make_env(config.environment),
-                        config.circuits.train,
-                        shuffle=True,
-                    )
-                ),
-                lambda reward: float(reward) * settings.reward_scale,
-            )
-            for _ in range(settings.n_envs)
-        ]
-    )
+
+    envs = make_training_envs(config)
     metadata = provenance(config, kind="ppo_smoke" if smoke else "ppo")
-    if initial_model is not None:
-        source_metadata = read_model_metadata(initial_model)
+    source_path = resume_model if resume_model is not None else initial_model
+    if source_path is not None:
+        source_metadata = read_model_metadata(source_path)
         metadata["initial_policy"] = {
-            "model_sha256": hashlib.sha256(initial_model.read_bytes()).hexdigest(),
-            "source": str(initial_model),
+            "model_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+            "source": str(source_path),
             "kind": source_metadata["kind"],
             "root_kind": source_metadata.get("initial_policy", {}).get(
                 "root_kind",
@@ -125,12 +157,28 @@ def train(
             ),
         }
     metadata["checkpoint_selection"] = "completed_laps, coverage, lap_time, return"
-    write_json(output / "metadata.json", metadata)
     started = time.perf_counter()
     try:
-        model = create_model(config, envs)
+        starting_timesteps = 0
+        if resume_model is not None:
+            model = load_model(resume_model, config, device=settings.device, env=envs)
+            starting_timesteps = model.num_timesteps
+            if not 0 < starting_timesteps < settings.total_timesteps:
+                raise ValueError("El presupuesto total debe superar los pasos del checkpoint.")
+            metadata["resume"] = {
+                "starting_timesteps": starting_timesteps,
+                "optimizer_restored": True,
+                "optimizer_state_entries": len(model.policy.optimizer.state),
+                "optimizer_steps_at_start": sorted(
+                    {float(state["step"]) for state in model.policy.optimizer.state.values()}
+                ),
+                "environment_state_restored": False,
+                "random_generator_state_restored": False,
+            }
+        else:
+            model = create_model(config, envs)
         if initial_model is not None:
-            source = load_model(initial_model, config)
+            source = load_model(initial_model, config, device=settings.device)
             if type(source.policy.action_dist) is not type(model.policy.action_dist):
                 raise ValueError("La distribución de acciones de la inicialización no coincide.")
             if source.policy.squash_output != model.policy.squash_output:
@@ -138,23 +186,42 @@ def train(
             model.policy.load_state_dict(source.policy.state_dict())
             with torch.no_grad():
                 model.policy.log_std.fill_(settings.log_std_init)
+            del source
+        metadata["execution"] = {
+            "requested_device": settings.device,
+            "vector_environment": type(envs).__name__,
+            "model_device": str(model.device),
+            "policy_devices": sorted(
+                {str(parameter.device) for parameter in model.policy.parameters()}
+            ),
+            "optimizer_devices": sorted(
+                {
+                    str(value.device)
+                    for state in model.policy.optimizer.state.values()
+                    for key, value in state.items()
+                    if torch.is_tensor(value) and key != "step"
+                }
+            ),
+            "torch_cuda_version": torch.version.cuda,
+            "cuda_device_name": torch.cuda.get_device_name(model.device)
+            if model.device.type == "cuda"
+            else None,
+        }
+        write_json(output / "metadata.json", metadata)
         model.set_logger(configure(str(output), ["stdout", "csv"]))
         before = torch.cat(
             [parameter.detach().flatten().clone() for parameter in model.policy.parameters()]
         )
         callbacks = []
         if not smoke:
-            callbacks = [
-                DrivingEvaluation(config, output),
-                CheckpointCallback(
-                    save_freq=max(1, settings.eval_every // settings.n_envs),
-                    save_path=str(output / "checkpoints"),
-                    name_prefix="ppo",
-                ),
-            ]
+            callbacks = [DrivingEvaluation(config, output)]
         try:
             with _interrupt_on_sigterm():
-                model.learn(total_timesteps=settings.total_timesteps, callback=callbacks)
+                model.learn(
+                    total_timesteps=settings.total_timesteps - starting_timesteps,
+                    callback=callbacks,
+                    reset_num_timesteps=resume_model is None,
+                )
         except KeyboardInterrupt as error:
             model.save(output / "interrupted_model.zip")
             write_json(
@@ -179,21 +246,26 @@ def train(
         try:
             observation, _ = probe_env.reset(seed=config.circuits.train[0])
             expected, _ = model.predict(observation, deterministic=True)
-            restored = PPO.load(model_path, device="cpu")
+            restored = PPO.load(model_path, device=model.device)
             actual, _ = restored.predict(observation, deterministic=True)
             np.testing.assert_array_equal(expected, actual)
         finally:
             probe_env.close()
+        if model.device.type == "cuda":
+            torch.cuda.synchronize(model.device)
         elapsed = time.perf_counter() - started
         results = {
             "kind": "integration_smoke" if smoke else "training",
             "requested_timesteps": settings.total_timesteps,
             "actual_timesteps": model.num_timesteps,
+            "starting_timesteps": starting_timesteps,
+            "trained_timesteps": model.num_timesteps - starting_timesteps,
             "wall_seconds": elapsed,
-            "steps_per_second": model.num_timesteps / elapsed,
+            "steps_per_second": (model.num_timesteps - starting_timesteps) / elapsed,
             "policy_parameter_delta_l2": float(torch.linalg.vector_norm(after - before)),
             "parameters_finite": True,
             "save_load_predictions_identical": True,
+            "device": str(model.device),
             "model_sha256": hashlib.sha256(model_path.read_bytes()).hexdigest(),
             "demonstrates_driving_performance": False,
         }
@@ -209,10 +281,14 @@ def read_model_metadata(path: Path) -> dict:
         return json.load(stream)
 
 
-def load_model(path: Path, config: ExperimentConfig) -> PPO:
+def load_model(
+    path: Path,
+    config: ExperimentConfig,
+    *,
+    device: str | None = None,
+    env: Env | VecEnv | None = None,
+) -> PPO:
     """Carga exclusivamente un checkpoint local de confianza con metadatos compatibles."""
-    from dataclasses import asdict
-
     metadata = read_model_metadata(path)
     if metadata["observation_version"] != OBSERVATION_VERSION:
         raise ValueError("La versión de observaciones del modelo no coincide.")
@@ -222,4 +298,5 @@ def load_model(path: Path, config: ExperimentConfig) -> PPO:
     if metadata["kind"] not in {"ppo", "ppo_smoke", "behavior_cloning", "dagger"}:
         raise ValueError("Los metadatos no corresponden a un entrenamiento de este proyecto.")
     torch.set_num_threads(config.ppo.torch_threads)
-    return PPO.load(path, device="cpu")
+    requested_device = config.ppo.device if device is None else device
+    return PPO.load(path, device=require_device(requested_device), env=env)

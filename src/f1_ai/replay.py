@@ -107,6 +107,7 @@ def record_replay(
         result = {
             "model": str(model_path),
             "model_sha256": hashlib.sha256(model_path.read_bytes()).hexdigest(),
+            "inference_device": str(model.device),
             "method": method,
             "seed": seed,
             "frames": frames,

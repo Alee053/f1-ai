@@ -84,6 +84,8 @@ class PPOConfig:
     ent_coef: float = 0.01
     eval_every: int = 25_000
     torch_threads: int = 1
+    device: str = "cpu"
+    vec_env: str = "dummy"
     hidden_size: int = 64
     log_std_init: float = 0.0
     reward_scale: float = 1.0
@@ -94,6 +96,10 @@ class PPOConfig:
     squash_output: bool = False
 
     def __post_init__(self):
+        if not isinstance(self.device, str) or self.device not in {"cpu", "cuda"}:
+            raise ValueError("device debe ser cpu o cuda.")
+        if not isinstance(self.vec_env, str) or self.vec_env not in {"dummy", "subproc"}:
+            raise ValueError("vec_env debe ser dummy o subproc.")
         integers = (
             self.total_timesteps,
             self.n_envs,
