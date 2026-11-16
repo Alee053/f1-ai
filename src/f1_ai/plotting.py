@@ -9,6 +9,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from gymnasium.envs.box2d.car_racing import FPS
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 COLORS = {
     "random": "#9b4a40",
@@ -83,9 +85,37 @@ def plot_training(directory: Path) -> Path:
     with np.load(directory / "validation" / "evaluations.npz", allow_pickle=False) as data:
         timesteps = data["timesteps"]
         returns = data["results"]
+        driving_keys = {"successes", "coverage", "ep_lengths"}
+        driving = (
+            {key: data[key] for key in driving_keys} if driving_keys <= set(data.files) else None
+        )
     means = returns.mean(axis=1)
-    deviations = returns.std(axis=1, ddof=1)
-    fig, axis = plt.subplots(figsize=(8, 3.2), layout="constrained")
+    deviations = returns.std(axis=1, ddof=int(returns.shape[1] > 1))
+    if driving is None:
+        # Los experimentos iniciales de SB3 solo registraban retorno y duración.
+        fig, axis = plt.subplots(figsize=(8, 3.2), layout="constrained")
+        axes = np.array([axis])
+    else:
+        fig, axes = plt.subplots(2, 2, figsize=(8, 5.6), layout="constrained")
+        axes = axes.ravel()
+        axis = axes[0]
+        successes = driving["successes"]
+        counts = successes.sum(axis=1)
+        lap_times = np.divide(
+            np.where(successes, driving["ep_lengths"] / FPS, 0).sum(axis=1),
+            counts,
+            out=np.full(len(counts), np.nan),
+            where=counts > 0,
+        )
+        axes[1].plot(timesteps, 100 * successes.mean(axis=1), color=COLORS["bc-ppo"], marker=".")
+        axes[1].set_ylabel("Vueltas completas (%)")
+        axes[1].set_ylim(-3, 103)
+        axes[2].plot(timesteps, 100 * driving["coverage"].mean(axis=1), color=COLORS["pursuit"])
+        axes[2].set_ylabel("Cobertura media (%)")
+        axes[2].set_ylim(-3, 103)
+        axes[3].plot(timesteps, lap_times, color=COLORS["bc"], marker=".")
+        axes[3].set_ylabel("Tiempo medio en éxitos (s)")
+        axes[3].set_title("Sin punto cuando no hay vueltas completas", fontsize=9)
     axis.plot(timesteps, means, color=COLORS["ppo"], label="Retorno medio en validación")
     axis.fill_between(
         timesteps,
@@ -95,13 +125,15 @@ def plot_training(directory: Path) -> Path:
         alpha=0.15,
         label="Desviación estándar entre circuitos",
     )
-    axis.set_xlabel("Interacciones de entrenamiento")
     axis.set_ylabel("Retorno acumulado")
-    axis.set_title("PPO en los cinco circuitos de validación", fontsize=11)
-    axis.ticklabel_format(axis="x", style="plain")
-    axis.spines[["top", "right"]].set_visible(False)
-    axis.legend(fontsize=8)
-    axis.grid(alpha=0.15)
+    fig.suptitle(f"PPO en {returns.shape[1]} circuitos de validación", fontsize=11)
+    axis.legend(fontsize=7)
+    for item in axes:
+        item.set_xlabel("Interacciones PPO (miles)")
+        item.xaxis.set_major_locator(MaxNLocator(nbins=4))
+        item.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value / 1000:g}"))
+        item.spines[["top", "right"]].set_visible(False)
+        item.grid(alpha=0.15)
     path = directory / "learning_curve.png"
     fig.savefig(path, dpi=200)
     plt.close(fig)
