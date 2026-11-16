@@ -417,3 +417,62 @@ optimización, solicita 500000 pasos y evalúa cada 50000. El límite KL puede d
 antes las épocas de PPO; no limita la distancia acumulada respecto a la imitación
 ni garantiza conservar su conducción. La comparación utiliza el tramo común de
 500000 interacciones y distingue los checkpoints que completan vueltas con salidas.
+
+### Referencia global de trazada y velocidad
+
+La nueva referencia prepara un experto orientado al tiempo de vuelta. Se comparan
+trazadas desplazadas del eje y candidatos que reducen longitud o curvatura mediante
+una búsqueda acotada. Cada candidato recibe un perfil de velocidad; se elige el de
+menor tiempo estimado. La cercanía al centro no forma parte de ese criterio.
+Esto no demuestra una trazada óptima: se exploran pocos candidatos con un modelo
+aproximado y aún se deben medir vueltas completas en Box2D.
+
+El perfil incorpora carga aerodinámica, drag, sensibilidad del neumático a la
+carga, propulsión trasera, reparto de freno y un presupuesto combinado de fuerzas
+por eje. Las pasadas de aceleración y frenado incluyen el cierre de la pista para
+anticipar las curvas siguientes. La estimación corresponde a una vuelta lanzada;
+los ensayos físicos actuales salen desde parado. No son tiempos equivalentes.
+
+`RacingController` sigue la trazada con pure pursuit y regula la velocidad usando
+el perfil. Limita la rapidez de cambio del volante y del pedal, reduce acelerador
+ante slip trasero excesivo y modera el freno al detectar bloqueo. Esa regulación
+pertenece al experto; la física mantiene su capacidad de patinar y bloquear ruedas.
+Los umbrales son parámetros iniciales pendientes de ajuste en conducción.
+
+Este experto recibe el mapa completo, los parámetros físicos y el estado SI del
+coche, incluidos slip y bloqueo. Tiene más información que la red actual de 16
+entradas. Los artefactos lo identifican como `full_map_and_physical_state`; no se
+mezcla con las evaluaciones de PPO o BC. La preparación de demostraciones nuevas
+requerirá decidir qué información y anticipación recibirá el alumno.
+
+Para preparar un plan desde un mapa ya guardado, sin generar pistas ni ejecutar
+pasos físicos, se puede utilizar:
+
+```bash
+uv run f1-ai plan-reference --track runs/formula-reference-01/track-0.json \
+  --samples 64 --iterations 4 --output runs/reference-plan-0
+```
+
+El JSON de entrada contiene las coordenadas `[[x, y], ...]` en metros, ordenadas
+según el sentido de marcha, sin repetir el primer punto al final. `--half-width`
+indica la semianchura de pista y por defecto usa la de CarRacing, 6.667 m.
+El corredor reserva media anchura del coche y `--road-margin` adicional. Se
+comprueban puntos de cada segmento; no se certifica la huella completa de la
+carrocería, la ausencia de cruces ni la dinámica transitoria del neumático.
+
+El comando de conducción permite una comprobación acotada o, cuando se decida
+evaluarlo, un episodio físico completo. Solo admite semillas de entrenamiento
+mientras se desarrolla esta referencia:
+
+```bash
+uv run f1-ai reference --seed 0 --steps 12 \
+  --samples 64 --iterations 2 --output runs/reference-smoke-0
+uv run f1-ai --config configs/formula-training.toml reference \
+  --seed 0 --output runs/reference-driving-0
+```
+
+Se guardan configuración, revisión Git, plan y trayectoria con slip y bloqueo.
+Los fallos no reciben un tiempo de vuelta. No se entrenan redes ni se modifica
+la recompensa existente. El modelo del plan omite transferencia longitudinal y
+rotación de ruedas; sus límites de velocidad se deben contrastar y ajustar con
+los ensayos físicos antes de usarlo como profesor de BC o DAgger.

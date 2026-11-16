@@ -7,6 +7,8 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+from gymnasium.envs.box2d.car_racing import TRACK_WIDTH
+
 from f1_ai.agents import PPOAgent, PursuitAgent, RandomAgent
 from f1_ai.artifacts import create_directory, provenance, write_json
 from f1_ai.config import load_config
@@ -87,6 +89,23 @@ def parser() -> argparse.ArgumentParser:
     )
     play.add_argument("--headless", action="store_true")
     commands.add_parser("controllers", help="Listar mandos detectados por SDL2")
+    plan = commands.add_parser(
+        "plan-reference", help="Planificar desde un mapa JSON guardado, sin simular ni entrenar"
+    )
+    plan.add_argument("--track", type=Path, required=True)
+    plan.add_argument("--half-width", type=float, default=TRACK_WIDTH, help="Semianchura en metros")
+    reference = commands.add_parser(
+        "reference", help="Probar el experto con mapa global en una pista de entrenamiento"
+    )
+    reference.add_argument("--seed", type=int, default=0)
+    reference.add_argument("--steps", type=int, help="Acotar pasos físicos de la comprobación")
+    for command in (plan, reference):
+        command.add_argument("--output", type=Path, required=True)
+        command.add_argument("--samples", type=int, default=128)
+        command.add_argument("--iterations", type=int, default=12)
+        command.add_argument("--max-speed", type=float, default=60, help="Límite en m/s")
+        command.add_argument("--grip-fraction", type=float, default=0.75)
+        command.add_argument("--road-margin", type=float, default=0.75, help="Margen en metros")
     return root
 
 
@@ -220,7 +239,9 @@ def main():
             print(json.dumps(connected_controllers(), indent=2))
             return
         config_path = args.config or Path(
-            "configs/formula.toml" if args.command == "play" else "configs/ppo.toml"
+            "configs/formula.toml"
+            if args.command in {"play", "plan-reference", "reference"}
+            else "configs/ppo.toml"
         )
         config = load_config(config_path)
         if args.command in {"train", "clone"} and getattr(args, "seed", None) is not None:
@@ -230,6 +251,26 @@ def main():
                 raise ValueError("La prueba smoke fija su propio número de pasos.")
             config = replace(config, ppo=replace(config.ppo, total_timesteps=args.timesteps))
         match args.command:
+            case "plan-reference" | "reference":
+                from f1_ai.racing_experiment import plan_saved_track, run_reference
+                from f1_ai.racing_line import ReferenceConfig
+
+                settings = ReferenceConfig(
+                    samples=args.samples,
+                    optimization_steps=args.iterations,
+                    speed_limit_m_s=args.max_speed,
+                    grip_fraction=args.grip_fraction,
+                    road_margin_m=args.road_margin,
+                )
+                if args.command == "plan-reference":
+                    result = plan_saved_track(
+                        config, args.track, args.output, settings, half_width_m=args.half_width
+                    )
+                else:
+                    result = run_reference(
+                        config, args.output, seed=args.seed, steps=args.steps, settings=settings
+                    )
+                print(json.dumps(result, indent=2, allow_nan=False))
             case "play":
                 from f1_ai.manual import run_manual
 
