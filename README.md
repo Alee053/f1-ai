@@ -166,7 +166,7 @@ uv run f1-ai --config configs/ppo-track-sde.toml demonstrations \
   --target-speed 40 --lateral-acceleration 12 --output runs/demos
 uv run f1-ai --config configs/ppo-track-sde.toml clone \
   --dataset runs/demos --epochs 60 --dagger-rounds 2 --seed 42 --output runs/clonado
-uv run f1-ai --config configs/ppo-imitation-gamma995.toml train \
+uv run f1-ai --config configs/ppo-imitation-conservative.toml train \
   --initial-model runs/clonado/best_model.zip --seed 42 --output runs/ajuste
 uv run f1-ai --config configs/evaluation-expanded.toml evaluate --agents bc-ppo \
   --model runs/ajuste/best_model.zip --min-completion 0.95 --output runs/evaluacion
@@ -208,7 +208,7 @@ Los checkpoints intermedios usan los metadatos de su directorio de corrida.
 ## Vídeo de la política
 
 ```bash
-uv run f1-ai --config configs/ppo-imitation-gamma995.toml replay \
+uv run f1-ai --config configs/ppo-imitation-conservative.toml replay \
   --model runs/ajuste/best_model.zip --seed 100 --output runs/replays/agente.mp4
 ```
 
