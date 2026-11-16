@@ -1,0 +1,43 @@
+# Refinamiento desde el checkpoint Formula seleccionado a200k; mantiene física y observaciones.
+[environment]
+max_steps = 6000
+off_track_grace_steps = 150
+minimum_coverage = 0.95
+steering_scale = 0.4
+reward_profile = "track"
+vehicle_model = "formula-v1"
+forward_speed_scale = 100.0
+
+[environment.formula]
+mass_kg = 770.0
+power_kw = 750.0
+downforce_cla_m2 = 5.0
+drag_cda_m2 = 1.2
+grip_coefficient = 1.65
+air_density_kg_m3 = 1.225
+
+[circuits]
+train = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+validation = [100, 101, 102, 103, 104]
+test = [200, 201, 202, 203, 204]
+
+[ppo]
+seed = 42
+total_timesteps = 2000000
+n_envs = 4
+n_steps = 1024
+batch_size = 256
+n_epochs = 10
+learning_rate = 0.000003
+gamma = 0.995
+gae_lambda = 0.95
+ent_coef = 0.0
+eval_every = 25000
+torch_threads = 1
+hidden_size = 128
+log_std_init = -5.0
+reward_scale = 0.01
+target_kl = 0.01
+use_sde = true
+sde_sample_freq = 4
+squash_output = true
