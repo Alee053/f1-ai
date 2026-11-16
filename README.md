@@ -1,9 +1,9 @@
 # Agente de conducción en carreras 2D
 
 Avance del proyecto de Inteligencia Artificial SIS-252, UCB Cochabamba, gestión II-2026.
-El objetivo principal es entrenar y evaluar una política neuronal PPO en un entorno
-existente. Gymnasium CarRacing aporta el circuito y la física Box2D. No se modela un
-vehículo real de Fórmula 1.
+El objetivo principal es entrenar y evaluar una política neuronal mediante imitación
+y ajuste con PPO en un entorno existente. Gymnasium CarRacing aporta el circuito
+y la física Box2D. No se modela un vehículo real de Fórmula 1.
 
 La primera etapa incluye observaciones numéricas, un controlador de referencia,
 separación de circuitos por semillas, entrenamiento reproducible y evaluación.
@@ -184,6 +184,20 @@ cuatro pasos. `log_std_init` controla los pesos del ruido, cuya desviación de
 acción también depende de las características latentes. La escala de recompensa
 de entrenamiento se aplica fuera de Monitor: las métricas conservan el retorno
 sin reescalar. No se utiliza normalización adaptativa con datos de validación.
+
+`configs/ppo-imitation-conservative.toml` conserva la configuración de
+`ppo-imitation-gamma995.toml` y reduce únicamente la tasa de aprendizaje de
+0.00003 a 0.00001. Permite comparar el tamaño de las actualizaciones desde el
+mismo checkpoint de imitación y con la misma semilla. Para evaluar la variación
+se repiten tanto la imitación como PPO, con semillas 42, 43 y 44; las pistas
+de evaluación siguen siendo las mismas.
+
+`plot-training` muestra retorno, vueltas completas, cobertura y tiempo medio
+de las vueltas completadas. Los puntos sin éxitos carecen de tiempo de vuelta.
+El punto inicial de un ajuste corresponde a la política de imitación antes de
+PPO. Si ninguna actualización la supera, la selección conserva ese punto:
+no debe atribuirse a PPO una mejora que no ocurrió. Los archivos históricos
+que solo contienen retornos siguen generando la curva de retorno.
 
 Las etiquetas `bc`, `bc-ppo` y `ppo` distinguen imitación, PPO inicializado por
 imitación y PPO desde cero. El evaluador rechaza etiquetas incompatibles con
