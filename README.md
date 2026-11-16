@@ -3,7 +3,10 @@
 Avance del proyecto de Inteligencia Artificial SIS-252, UCB Cochabamba, gestión II-2026.
 El objetivo principal es entrenar y evaluar una política neuronal mediante imitación
 y ajuste con PPO en un entorno existente. Gymnasium CarRacing aporta el circuito
-y la física Box2D. No se modela un vehículo real de Fórmula 1.
+y la física Box2D del perfil `classic`, utilizado en los experimentos de la entrega.
+El perfil experimental `formula-v1` añade dinámica planar en unidades SI inspirada
+en F1 y un modo manual con mando Xbox. Sus parámetros requieren ajuste y no
+representan un monoplaza validado.
 
 La primera etapa incluye observaciones numéricas, un controlador de referencia,
 separación de circuitos por semillas, entrenamiento reproducible y evaluación.
@@ -37,9 +40,9 @@ Las semillas de `configs/ppo.toml` separan 20 circuitos de entrenamiento, 5 de
 validación y 5 de prueba. La partición de prueba se reserva para la evaluación
 final. Consultar un circuito de validación no lo convierte en una prueba final.
 
-La adaptación numérica usa CarRacing de Gymnasium 1.2.3, con Box2D a 50 Hz.
+La adaptación numérica del perfil `classic` usa CarRacing de Gymnasium 1.2.3, con Box2D a 50 Hz.
 Sobrescribe la salida interna `state_pixels`, que en el entorno original se
-renderiza incluso sin ventana. No modifica `car_dynamics.py`. Una prueba compara
+renderiza incluso sin ventana. No modifica el paquete instalado. Una prueba del perfil clásico compara
 posiciones y recompensas nativas de ambos entornos para las mismas acciones.
 La simulación visual sigue disponible al construir el entorno con
 `render_mode="rgb_array"` o `render_mode="human"`.
@@ -225,3 +228,116 @@ registra por separado el perfil de recompensa configurado.
 - [Comparación de métodos de conducción en F1TENTH](https://arxiv.org/abs/2402.18558v2)
 - [DAgger y distribución de estados inducida por el alumno](https://proceedings.mlr.press/v15/ross11a.html)
 - [Exploración suave gSDE](https://proceedings.mlr.press/v164/raffin22a.html)
+
+
+## Conducción manual con Xbox
+
+```bash
+uv sync --locked
+uv run f1-ai controllers
+uv run f1-ai play
+```
+
+`play` utiliza `configs/formula.toml` por defecto. Los demás subcomandos mantienen
+`configs/ppo.toml` como configuración predeterminada. El mando se identifica con
+el mapeo estándar SDL2, compatible con Xbox por USB o Bluetooth cuando SDL lo
+reconoce. El nombre mostrado por Linux puede ser "Xbox 360 Controller" incluso
+para un dispositivo conectado por Bluetooth.
+
+La ventana comienza en pausa. Se debe hacer clic en ella y pulsar START o espacio.
+Conviene arrancar con RT progresivamente: el modelo permite patinamiento al aplicar
+potencia excesiva y bloqueo al frenar. No tiene ABS ni control de tracción físicos.
+
+| Acción | Mando Xbox | Teclado |
+| --- | --- | --- |
+| Dirección | Stick izquierdo | Flechas izquierda/derecha |
+| Acelerador | RT | Flecha arriba |
+| Freno | LT | Flecha abajo |
+| Pausa y reanudación | START o B | Espacio o P |
+| Reiniciar la pista | A | R |
+| Siguiente pista | X | N |
+| Abrir ajustes | Y | TAB |
+| Seleccionar parámetro | Cruceta arriba/abajo | W/S |
+| Modificar parámetro | Cruceta izquierda/derecha | A/D |
+| Comparar carga aero encendida/apagada | LB | B |
+| Guardar configuración | RB | F5 |
+| Mostrar el eje de referencia | Sin asignación | G |
+| Salir | BACK | ESC |
+
+Si se pulsan ambos gatillos, el freno tiene prioridad. La zona muerta y la curva
+del stick ajustan la entrada del mando y no modifican la adherencia física.
+Se pueden configurar al arrancar:
+
+```bash
+uv run f1-ai play --deadzone 0.08 --steering-curve 1.6
+uv run f1-ai play --controller 0 --seed 3
+```
+
+La pérdida de foco o de conexión pausa la sesión y exige reanudación explícita.
+La práctica utiliza solamente las semillas de entrenamiento. Permite recuperar
+el coche en césped sin terminar el episodio tras una salida breve; los límites
+de práctica se registran aparte y no sustituyen los del TOML exportado.
+
+Cada sesión crea un directorio nuevo `runs/manual-...` con metadatos, telemetría
+CSV, captura final y configuración. F5/RB escribe `saved-001.toml`, etc. Los cambios
+de parámetros reinician la misma pista y dejan la sesión en pausa. El ajuste LB
+cambia únicamente downforce y mantiene drag para aislar el efecto del agarre;
+no representa DRS ni aerodinámica activa del reglamento real.
+
+```bash
+uv run f1-ai --config runs/manual-.../saved-001.toml play
+uv run f1-ai --config configs/ppo-imitation-conservative.toml play
+```
+
+El segundo comando permite probar el coche clásico con los mismos controles.
+Las velocidades de ese perfil conservan unidades del simulador, sin etiqueta
+km/h. La física siempre avanza a 50 Hz con un acumulador independiente del render.
+La cámara muestra más pista por delante al aumentar la velocidad.
+
+## Modelo Formula v1
+
+El nuevo coche conserva el trazado procedural de CarRacing y sustituye la dinámica
+antes del primer paso físico. Unidades del perfil: metros, segundos, kg y N.
+Se reutiliza la forma de la carrocería, redimensionada a la batalla y anchura
+seleccionadas. El código del motor físico instalado permanece intacto.
+
+- Masa total de 770 kg, incluidos cuatro cuerpos de rueda de 12 kg.
+- Potencia agregada pico de 750 kW, aproximadamente 1006 hp mecánicos, con eficiencia
+  de transmisión de 0.90. No se simula el despliegue energético de una batería.
+- Batalla de 3.4 m y anchura exterior de 1.9 m.
+- Propulsión trasera, giro delantero de hasta 0.4 rad y límite de velocidad del actuador.
+- Dinámica angular de las ruedas con par motor, freno y reacción de contacto.
+- Fuerzas longitudinales y laterales por slip, con saturación combinada, pérdida
+  de agarre por deslizamiento y sensibilidad a carga del neumático.
+- Transferencia de carga cuasiestática longitudinal y lateral. No hay suspensión 3D.
+- Downforce y drag proporcionales al cuadrado de velocidad, más resistencia de rodadura.
+
+La aerodinámica utiliza `F = 0.5 * rho * coeficiente_por_area * v²`. Downforce
+incrementa la carga normal y el agarre de las ruedas; la masa inercial del coche
+permanece fija. Drag aplica una fuerza contraria a la velocidad. Se usan diez
+subpasos para integrar la rotación de las ruedas por cada paso físico externo.
+
+El preset usa densidad del aire 1.225 kg/m³, ClA 5.0 m² y CdA 1.2 m². Estos
+coeficientes, el agarre base 1.65, el centro de gravedad y los límites de par son
+elecciones de ingeniería editables, no mediciones de un equipo F1. A 100, 200 y
+300 km/h, el downforce calculado es aproximadamente 2.36, 9.45 y 21.27 kN.
+La densidad elegida tampoco representa una medición de la atmósfera local.
+
+Los ajustes están bajo `[environment.formula]` en `configs/formula.toml`. Los
+campos omitidos utilizan los valores explícitos de `FormulaConfig`. El editor
+manual expone masa, potencia, agarre, ClA, CdA, reparto de freno y densidad del aire.
+
+Las referencias públicas 2026 son [F1 sobre dimensiones y masa](https://corp.formula1.com/f1-2026-regulations-terminology-update/),
+[FIA sobre las unidades de potencia](https://www.fia.com/news/f1s-new-era-everything-you-need-know-about-how-fia-making-formula-1-more-competitive-more)
+y las ecuaciones de [sustentación](https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/lift-equation/)
+y [drag de NASA](https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/drag-equation/).
+La suma de 750 kW es una simplificación de potencia pico. Los límites de despliegue
+eléctrico y las condiciones de masa de la [FIA, sección C, Issue 21](https://www.fia.com/system/files/documents/fia_2026_f1_regulations_-_section_c_technical_-_iss_21_-_2026-10-19.pdf)
+son más detallados. No se simulan marchas, diferencial, temperatura de neumáticos,
+desgaste, combustible variable ni aerodinámica activa.
+
+Los resultados de los entrenamientos anteriores corresponden a `classic`.
+La carga de un checkpoint compara el perfil y todos sus parámetros: rechaza
+utilizarlo con Formula o con una configuración física distinta. Los modelos
+necesitan entrenarse nuevamente para esta dinámica; las comprobaciones breves de
+integración no demuestran conducción aprendida en el perfil nuevo.
