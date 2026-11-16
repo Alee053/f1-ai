@@ -1,4 +1,4 @@
-"""Adaptación numérica de CarRacing 1.2.3; se conserva su física Box2D."""
+"""CarRacing numérico con física clásica o modelo Formula versionado."""
 
 from typing import Any
 
@@ -38,7 +38,8 @@ class NumericCarRacing(CarRacing):
 
     La geometría del mapa es información privilegiada de simulación. No se infiere
     desde imágenes ni se representa un sensor físico. El único método privado
-    adaptado es _render: se verifica contra la versión fijada de Gymnasium.
+    adaptado es _render. Formula sustituye el coche en el paso inicial de reset;
+    ambos contratos se verifican contra la versión fijada de Gymnasium.
     """
 
     def __init__(self, config: EnvironmentConfig, render_mode: str | None = None):
@@ -80,7 +81,7 @@ class NumericCarRacing(CarRacing):
         waypoints = np.column_stack((future @ right, future @ forward)) / WAYPOINT_SCALE
         state = np.array(
             [
-                np.dot(velocity, forward) / 60.0,
+                np.dot(velocity, forward) / self.config.forward_speed_scale,
                 np.dot(velocity, right) / 30.0,
                 hull.angularVelocity / 5.0,
                 np.dot(projection.tangent, right),
@@ -117,7 +118,15 @@ class NumericCarRacing(CarRacing):
 
     def step(self, action: np.ndarray | None):
         if action is None:
-            # Únicamente el paso de inicialización interno de CarRacing.reset.
+            # reset crea el coche clásico antes de llamar a step(None). Se sustituye
+            # antes del primer paso físico, sin parches globales sobre Gymnasium.
+            if self.config.vehicle_model == "formula-v1":
+                from f1_ai.formula_car import FormulaCar
+
+                assert self.car is not None and self.config.formula is not None
+                if not isinstance(self.car, FormulaCar):
+                    self.car.destroy()
+                    self.car = FormulaCar(self.world, *self.track[0][1:4], self.config.formula)
             return super().step(None)
         if self.progress is None or self._episode_done:
             raise gym.error.ResetNeeded("Se debe llamar a reset antes del siguiente episodio.")
@@ -181,6 +190,8 @@ class NumericCarRacing(CarRacing):
     def _info(self, reason: str, native_reward: float) -> dict[str, Any]:
         assert self.geometry is not None and self.car is not None
         return {
+            **getattr(self.car, "telemetry", {}),
+            "vehicle_model": self.config.vehicle_model,
             "lap_complete": reason == "lap_complete",
             "is_success": reason == "lap_complete",
             "termination_reason": reason,

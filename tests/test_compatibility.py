@@ -26,3 +26,23 @@ def test_old_checkpoints_default_to_legacy_action_semantics(tmp_path: Path):
                 environment=replace(config.environment, steering_scale=0.4),
             ),
         )
+
+
+def test_formula_checkpoint_records_physics_and_rejects_changed_downforce(tmp_path: Path):
+    config = load_config("configs/formula.toml")
+    output = tmp_path / "formula"
+    train(config, output, smoke=True)
+    load_model(output / "model.zip", config)
+    changed = replace(
+        config,
+        environment=replace(
+            config.environment, formula=replace(config.environment.formula, downforce_cla_m2=0)
+        ),
+    )
+    with pytest.raises(ValueError, match="configuración"):
+        load_model(output / "model.zip", changed)
+    classic = replace(
+        config, environment=load_config("configs/ppo-imitation-conservative.toml").environment
+    )
+    with pytest.raises(ValueError, match="configuración"):
+        load_model(output / "model.zip", classic)

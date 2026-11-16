@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
 
+from f1_ai.vehicle import FormulaConfig
+
 
 @dataclass(frozen=True)
 class EnvironmentConfig:
@@ -13,8 +15,29 @@ class EnvironmentConfig:
     minimum_coverage: float = 0.95
     steering_scale: float = 1.0
     reward_profile: str = "progress"
+    vehicle_model: str = "classic"
+    formula: FormulaConfig | None = None
+    forward_speed_scale: float = 60.0
 
     def __post_init__(self):
+        if self.vehicle_model not in {"classic", "formula-v1"}:
+            raise ValueError("vehicle_model debe ser classic o formula-v1.")
+        if isinstance(self.formula, dict):
+            object.__setattr__(self, "formula", FormulaConfig(**self.formula))
+        if self.vehicle_model == "formula-v1" and self.formula is None:
+            object.__setattr__(self, "formula", FormulaConfig())
+        if self.formula is not None and not isinstance(self.formula, FormulaConfig):
+            raise ValueError("formula debe contener parámetros Formula válidos.")
+        if self.vehicle_model == "classic" and self.formula is not None:
+            raise ValueError("Los parámetros Formula requieren vehicle_model=formula-v1.")
+        if (
+            isinstance(self.forward_speed_scale, bool)
+            or not isinstance(self.forward_speed_scale, (int, float))
+            or not 1 <= self.forward_speed_scale <= 200
+        ):
+            raise ValueError("forward_speed_scale debe pertenecer a [1, 200].")
+        if self.vehicle_model == "formula-v1" and self.steering_scale != 0.4:
+            raise ValueError("Formula v1 requiere steering_scale=0.4.")
         if any(
             type(value) is not int or value <= 0
             for value in (self.max_steps, self.off_track_grace_steps)
