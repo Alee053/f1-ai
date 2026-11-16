@@ -11,6 +11,8 @@ class EnvironmentConfig:
     max_steps: int = 3000
     off_track_grace_steps: int = 75
     minimum_coverage: float = 0.95
+    steering_scale: float = 1.0
+    reward_profile: str = "progress"
 
     def __post_init__(self):
         if any(
@@ -20,6 +22,10 @@ class EnvironmentConfig:
             raise ValueError("Los límites de pasos deben ser positivos.")
         if not 0 < self.minimum_coverage <= 1:
             raise ValueError("La cobertura mínima debe pertenecer a (0, 1].")
+        if not 0 < self.steering_scale <= 1:
+            raise ValueError("La escala de dirección debe pertenecer a (0, 1].")
+        if self.reward_profile not in {"progress", "track"}:
+            raise ValueError("El perfil de recompensa debe ser progress o track.")
 
 
 @dataclass(frozen=True)
@@ -55,6 +61,11 @@ class PPOConfig:
     ent_coef: float = 0.01
     eval_every: int = 25_000
     torch_threads: int = 1
+    hidden_size: int = 64
+    log_std_init: float = 0.0
+    reward_scale: float = 1.0
+    clip_range: float = 0.2
+    target_kl: float | None = None
 
     def __post_init__(self):
         integers = (
@@ -65,6 +76,7 @@ class PPOConfig:
             self.n_epochs,
             self.eval_every,
             self.torch_threads,
+            self.hidden_size,
         )
         if any(type(value) is not int or value <= 0 for value in integers):
             raise ValueError("Los tamaños y frecuencias de PPO deben ser enteros positivos.")
@@ -80,6 +92,12 @@ class PPOConfig:
             raise ValueError("La entropía debe ser finita y no negativa.")
         if type(self.seed) is not int or self.seed < 0:
             raise ValueError("La semilla debe ser un entero no negativo.")
+        if not isfinite(self.log_std_init) or not -5 <= self.log_std_init <= 2:
+            raise ValueError("log_std_init debe ser finito y pertenecer a [-5, 2].")
+        if not 0 < self.reward_scale <= 1 or not 0 < self.clip_range <= 1:
+            raise ValueError("Las escalas de recompensa y recorte deben pertenecer a (0, 1].")
+        if self.target_kl is not None and not 0 < self.target_kl < 1:
+            raise ValueError("target_kl debe ser None o pertenecer a (0, 1).")
 
 
 @dataclass(frozen=True)

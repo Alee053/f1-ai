@@ -99,3 +99,35 @@ def test_leaving_playfield_is_failure_not_success():
         assert not info["lap_complete"]
     finally:
         env.close()
+
+
+def test_normalized_steering_maps_to_physical_joint_range():
+    numeric = make_env(EnvironmentConfig(steering_scale=0.4))
+    native = CarRacing()
+    try:
+        numeric.reset(seed=3)
+        native.reset(seed=3)
+        for _ in range(20):
+            numeric.step(np.array([0.5, 0.3], dtype=np.float32))
+            native.step(np.array([0.2, 0.3, 0.0], dtype=np.float32))
+            np.testing.assert_allclose(numeric.car.hull.position, native.car.hull.position)
+    finally:
+        numeric.close()
+        native.close()
+
+
+def test_track_reward_never_credits_off_track_progress():
+    env = make_env(EnvironmentConfig(reward_profile="track"))
+    outside_steps = 0
+    try:
+        env.reset(seed=100)
+        for _ in range(600):
+            _, reward, terminated, truncated, _ = env.step(np.array([0, 1], dtype=np.float32))
+            if env.road_contact_fraction < 0.5:
+                outside_steps += 1
+                assert reward <= -0.1
+            if terminated or truncated:
+                break
+        assert outside_steps > 0
+    finally:
+        env.close()

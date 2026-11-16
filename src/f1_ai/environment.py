@@ -127,7 +127,7 @@ class NumericCarRacing(CarRacing):
         steering, acceleration = action
         native_action = np.array(
             [
-                steering,
+                steering * self.config.steering_scale,
                 max(float(acceleration), 0.0),
                 max(float(-acceleration), 0.0),
             ],
@@ -165,6 +165,15 @@ class NumericCarRacing(CarRacing):
 
         # Cada metro de avance neto máximo se premia una sola vez por episodio.
         reward = 1000.0 * gain / self.geometry.length - 0.1
+        if self.config.reward_profile == "track":
+            # El progreso geométrico fuera de carretera no es avance válido.
+            if off_track:
+                reward = -1.0
+            else:
+                centered = max(0.0, 1.0 - abs(projection.lateral) / TRACK_WIDTH)
+                forward = np.array(self.car.hull.GetWorldVector((0, 1)))
+                aligned = max(0.0, float(np.dot(projection.tangent, forward)))
+                reward = 1000.0 * gain / self.geometry.length * centered * aligned - 0.1
         reward += 100.0 * (reason == "lap_complete")
         reward -= 50.0 * (reason == "off_track") + 100.0 * outside
         return observation, float(reward), terminated, truncated, self._info(reason, native_reward)
@@ -173,6 +182,7 @@ class NumericCarRacing(CarRacing):
         assert self.geometry is not None and self.car is not None
         return {
             "lap_complete": reason == "lap_complete",
+            "is_success": reason == "lap_complete",
             "termination_reason": reason,
             "coverage": self.tile_visited_count / len(self.track),
             "forward_progress": self.progress.furthest / self.geometry.length

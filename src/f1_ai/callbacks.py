@@ -1,0 +1,77 @@
+"""Selección por vueltas completas antes de optimizar cobertura o velocidad."""
+
+import json
+from pathlib import Path
+
+import numpy as np
+from stable_baselines3.common.callbacks import BaseCallback
+
+from f1_ai.agents import PPOAgent
+from f1_ai.artifacts import write_json
+from f1_ai.config import ExperimentConfig
+from f1_ai.evaluation import evaluate_episode, summarize
+
+
+class DrivingEvaluation(BaseCallback):
+    def __init__(self, config: ExperimentConfig, output: Path):
+        super().__init__()
+        self.config = config
+        self.output = output
+        self.directory = output / "validation"
+        self.directory.mkdir()
+        self.next_evaluation = config.ppo.eval_every
+        self.history: list[dict] = []
+        self.best_score: tuple | None = None
+
+    def _evaluate(self):
+        episodes = [
+            evaluate_episode(self.config.environment, PPOAgent(self.model), seed, agent_name="ppo")
+            for seed in self.config.circuits.validation
+        ]
+        summary = summarize(episodes)
+        # Para cero éxitos, el tercer componente no discrimina.
+        score = (
+            summary["completed_laps"],
+            summary["mean_coverage"],
+            -(summary["mean_lap_time_seconds"] or float("inf")),
+            summary["mean_return"],
+        )
+        record = {"timesteps": self.num_timesteps, "summary": summary, "episodes": episodes}
+        self.history.append(record)
+        np.savez_compressed(
+            self.directory / "evaluations.npz",
+            timesteps=np.array([row["timesteps"] for row in self.history]),
+            results=np.array([[ep["return"] for ep in row["episodes"]] for row in self.history]),
+            ep_lengths=np.array([[ep["steps"] for ep in row["episodes"]] for row in self.history]),
+            successes=np.array(
+                [[ep["lap_complete"] for ep in row["episodes"]] for row in self.history]
+            ),
+            coverage=np.array([[ep["coverage"] for ep in row["episodes"]] for row in self.history]),
+        )
+        write_json(self.directory / f"step-{self.num_timesteps}.json", record)
+        if self.best_score is None or score > self.best_score:
+            self.best_score = score
+            self.model.save(self.output / "best_model.zip")
+            # Es un artefacto generado que se actualiza dentro de esta corrida.
+            (self.output / "best_selection.json").write_text(
+                json.dumps(record, indent=2, allow_nan=False), encoding="utf-8"
+            )
+        self.logger.record("eval/completion_rate", summary["completion_rate"])
+        self.logger.record("eval/mean_coverage", summary["mean_coverage"])
+        self.logger.record("eval/mean_reward", summary["mean_return"])
+        self.logger.dump(self.num_timesteps)
+        print(
+            f"[evaluation] steps={self.num_timesteps} "
+            f"laps={summary['completed_laps']}/{summary['episodes']} "
+            f"coverage={summary['mean_coverage']:.3f} return={summary['mean_return']:.2f}",
+            flush=True,
+        )
+
+    def _on_training_start(self):
+        self._evaluate()
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps >= self.next_evaluation:
+            self._evaluate()
+            self.next_evaluation += self.config.ppo.eval_every
+        return True

@@ -34,6 +34,9 @@ def parser() -> argparse.ArgumentParser:
     training = commands.add_parser("train", help="Entrenar PPO o ejecutar una prueba de 512 pasos")
     training.add_argument("--smoke", action="store_true", help="Prueba de integración de 512 pasos")
     training.add_argument("--output", type=Path, required=True)
+    training.add_argument(
+        "--initial-model", type=Path, help="Inicializar pesos desde un modelo compatible"
+    )
     plot = commands.add_parser("plot", help="Exportar figuras de una evaluación existente")
     plot.add_argument("--evaluation", type=Path, required=True)
     training_plot = commands.add_parser(
@@ -147,7 +150,17 @@ def main():
             case "train":
                 from f1_ai.training import train
 
-                print(json.dumps(train(config, args.output, smoke=args.smoke), indent=2))
+                print(
+                    json.dumps(
+                        train(
+                            config,
+                            args.output,
+                            smoke=args.smoke,
+                            initial_model=args.initial_model,
+                        ),
+                        indent=2,
+                    )
+                )
             case "plot":
                 from f1_ai.plotting import plot_evaluation
 
