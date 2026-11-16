@@ -34,6 +34,9 @@ def parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--reference-speed", type=float, default=30.0)
     evaluate.add_argument("--reference-lateral-acceleration", type=float, default=8.0)
     evaluate.add_argument(
+        "--min-completion", type=float, help="Exigir una tasa mínima a cada agente"
+    )
+    evaluate.add_argument(
         "--model", type=Path, help="Checkpoint local de confianza con metadata.json"
     )
     training = commands.add_parser("train", help="Entrenar PPO o ejecutar una prueba de 512 pasos")
@@ -63,6 +66,10 @@ def parser() -> argparse.ArgumentParser:
     imitation.add_argument("--learning-rate", type=float, default=1e-3)
     imitation.add_argument("--dagger-rounds", type=int, default=0)
     imitation.add_argument("--seed", type=int)
+    replay = commands.add_parser("replay", help="Exportar una vuelta de la red neuronal en MP4")
+    replay.add_argument("--model", type=Path, required=True)
+    replay.add_argument("--output", type=Path, required=True)
+    replay.add_argument("--seed", type=int, default=100)
     return root
 
 
@@ -118,6 +125,8 @@ def run_benchmark(config, args):
 
 
 def run_evaluate(config, args):
+    if args.min_completion is not None and not 0 <= args.min_completion <= 1:
+        raise ValueError("La finalización mínima debe pertenecer a [0, 1].")
     learned = set(args.agents) & {"ppo", "bc", "bc-ppo"}
     if len(learned) > 1:
         raise ValueError("Un checkpoint solo puede evaluarse bajo una etiqueta de método.")
@@ -173,13 +182,21 @@ def run_evaluate(config, args):
         output,
     )
     print(json.dumps(results["summaries"], indent=2, allow_nan=False))
+    if args.min_completion is not None:
+        failed = [
+            name
+            for name, summary in results["summaries"].items()
+            if summary["completion_rate"] < args.min_completion
+        ]
+        if failed:
+            raise SystemExit(f"No se alcanzó la finalización exigida: {', '.join(failed)}")
 
 
 def main():
     args = parser().parse_args()
     try:
         config = load_config(args.config)
-        if getattr(args, "seed", None) is not None:
+        if args.command in {"train", "clone"} and getattr(args, "seed", None) is not None:
             config = replace(config, ppo=replace(config.ppo, seed=args.seed))
         if getattr(args, "timesteps", None) is not None:
             if args.smoke:
@@ -237,6 +254,14 @@ def main():
                     dagger_rounds=args.dagger_rounds,
                 )
                 print(json.dumps(result, indent=2))
+            case "replay":
+                from f1_ai.replay import record_replay
+
+                print(
+                    json.dumps(
+                        record_replay(config, args.model, args.output, seed=args.seed), indent=2
+                    )
+                )
     except (ValueError, TypeError, OSError) as error:
         raise SystemExit(f"Error: {error}") from error
 

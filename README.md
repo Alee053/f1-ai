@@ -105,8 +105,9 @@ de experimentos nuevas no sobrescriben las anteriores.
 
 ## PPO
 
-La red contiene dos capas de 64 unidades para el actor y otras dos para el
-crítico. Los hiperparámetros y la semilla se definen en `configs/ppo.toml`.
+La configuración original contiene dos capas de 64 unidades para el actor y
+otras dos para el crítico. Las variantes permiten configurar ese tamaño y
+emplean 128 unidades. Los hiperparámetros y la semilla se definen en los TOML de `configs/`.
 Se usa CPU y un hilo de PyTorch. Cuatro entornos vectorizados ejecutan sus pasos
 secuencialmente mediante `DummyVecEnv`.
 
@@ -137,12 +138,70 @@ uv run f1-ai evaluate --agents random pursuit ppo --split validation \
 PPO completa rollouts enteros, por lo que puede superar ligeramente el número
 solicitado de pasos. Se registra el total real. Cada 25000 interacciones se
 evalúan los circuitos de validación y se guarda un checkpoint. El mejor modelo
-se elige por retorno medio de validación. La interrupción con Ctrl+C conserva
+se elige por vueltas completas, cobertura y tiempo, con retorno como último desempate.
+La interrupción con Ctrl+C conserva
 un modelo parcial y el número de interacciones realizadas.
 
 Solo deben cargarse checkpoints locales de confianza: SB3 usa serialización
 que puede ejecutar código al abrir archivos de terceros. La carga también
 comprueba versión de observaciones y configuración del entorno.
+
+## Imitación y ajuste con PPO
+
+La variante corregida usa `steering_scale=0.4`: el intervalo normalizado se
+convierte al rango físico de la dirección. Los modelos anteriores conservan
+la escala 1 y no se cargan bajo la interpretación nueva. El perfil `track`
+no premia el avance fuera de carretera y pondera el avance por centrado y
+alineación. Las escalas y perfiles se registran en los metadatos. Sus retornos
+no son directamente comparables con los del perfil original `progress`.
+
+El controlador etiqueta observaciones exclusivamente en los circuitos de
+entrenamiento. BC ajusta el actor por regresión supervisada. DAgger agrega
+etiquetas del experto para estados visitados por el alumno. Se guarda y evalúa
+cada etapa antes de iniciar PPO. En validación e inferencia actúa únicamente
+la red; no existe un controlador de rescate.
+
+```bash
+uv run f1-ai --config configs/ppo-track-sde.toml demonstrations \
+  --target-speed 40 --lateral-acceleration 12 --output runs/demos
+uv run f1-ai --config configs/ppo-track-sde.toml clone \
+  --dataset runs/demos --epochs 60 --dagger-rounds 2 --seed 42 --output runs/clonado
+uv run f1-ai --config configs/ppo-imitation-gamma995.toml train \
+  --initial-model runs/clonado/best_model.zip --seed 42 --output runs/ajuste
+uv run f1-ai --config configs/evaluation-expanded.toml evaluate --agents bc-ppo \
+  --model runs/ajuste/best_model.zip --min-completion 0.95 --output runs/evaluacion
+uv run f1-ai plot --evaluation runs/evaluacion
+```
+
+Los ejemplos requieren carpetas de salida nuevas. `--seed` permite repetir
+el procedimiento con otra inicialización y `--timesteps` cambiar el presupuesto
+de PPO sin modificar el TOML. La validación ampliada contiene 20 circuitos,
+semillas 100 a 119. Las semillas 200 a 204 siguen reservadas para prueba final.
+
+La política gSDE tiene acciones acotadas mediante tanh y remuestrea los pesos
+de exploración cada cuatro pasos; no mantiene una acción fija durante esos
+cuatro pasos. `log_std_init` controla los pesos del ruido, cuya desviación de
+acción también depende de las características latentes. La escala de recompensa
+de entrenamiento se aplica fuera de Monitor: las métricas conservan el retorno
+sin reescalar. No se utiliza normalización adaptativa con datos de validación.
+
+Las etiquetas `bc`, `bc-ppo` y `ppo` distinguen imitación, PPO inicializado por
+imitación y PPO desde cero. El evaluador rechaza etiquetas incompatibles con
+la procedencia del checkpoint. `--min-completion` hace fallar el comando si
+algún agente solicitado no alcanza la tasa requerida; sus mediciones se conservan.
+Los checkpoints intermedios usan los metadatos de su directorio de corrida.
+
+## Vídeo de la política
+
+```bash
+uv run f1-ai --config configs/ppo-imitation-gamma995.toml replay \
+  --model runs/ajuste/best_model.zip --seed 100 --output runs/replays/agente.mp4
+```
+
+La exportación usa ffmpeg si está instalado y produce MP4, una captura PNG y
+un JSON con el modelo, semilla y resultado. Ejecuta la red cargada sin invocar
+al experto. La puntuación del HUD es la nativa de CarRacing; la evaluación
+registra por separado el perfil de recompensa configurado.
 
 ## Fuentes de implementación
 
@@ -150,3 +209,5 @@ comprueba versión de observaciones y configuración del entorno.
 - [Dinámica original del coche](https://github.com/Farama-Foundation/Gymnasium/blob/v1.2.3/gymnasium/envs/box2d/car_dynamics.py)
 - [PPO en Stable-Baselines3](https://stable-baselines3.readthedocs.io/en/v2.7.1/modules/ppo.html)
 - [Comparación de métodos de conducción en F1TENTH](https://arxiv.org/abs/2402.18558v2)
+- [DAgger y distribución de estados inducida por el alumno](https://proceedings.mlr.press/v15/ross11a.html)
+- [Exploración suave gSDE](https://proceedings.mlr.press/v164/raffin22a.html)

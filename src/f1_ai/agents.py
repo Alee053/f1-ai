@@ -27,7 +27,9 @@ class PursuitAgent:
     """
 
     def __init__(self, target_speed: float = 30.0, lateral_acceleration: float = 8.0):
-        if target_speed <= 0 or lateral_acceleration <= 0:
+        if not np.isfinite([target_speed, lateral_acceleration]).all() or (
+            target_speed <= 0 or lateral_acceleration <= 0
+        ):
             raise ValueError("Los parámetros del controlador deben ser positivos.")
         self.target_speed = target_speed
         self.lateral_acceleration = lateral_acceleration
