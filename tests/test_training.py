@@ -43,3 +43,15 @@ def test_vectorized_training_saves_validation_and_checkpoint(tmp_path: Path):
     assert (output / "best_model.zip").is_file()
     assert (output / "validation" / "evaluations.npz").is_file()
     assert list((output / "checkpoints").glob("*.zip"))
+
+
+def test_warm_start_records_source_and_updates_weights(tmp_path: Path):
+    config = load_config("configs/ppo.toml")
+    initial = tmp_path / "initial"
+    target = tmp_path / "target"
+    train(config, initial, smoke=True)
+    result = train(config, target, smoke=True, initial_model=initial / "model.zip")
+    metadata = json.loads((target / "metadata.json").read_text())
+    assert metadata["initial_policy"]["root_kind"] == "ppo_smoke"
+    assert result["policy_parameter_delta_l2"] > 0
+    assert result["save_load_predictions_identical"]

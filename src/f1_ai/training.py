@@ -89,9 +89,16 @@ def train(
     )
     metadata = provenance(config, kind="ppo_smoke" if smoke else "ppo")
     if initial_model is not None:
+        with (initial_model.parent / "metadata.json").open() as stream:
+            source_metadata = json.load(stream)
         metadata["initial_policy"] = {
             "model_sha256": hashlib.sha256(initial_model.read_bytes()).hexdigest(),
             "source": str(initial_model),
+            "kind": source_metadata["kind"],
+            "root_kind": source_metadata.get("initial_policy", {}).get(
+                "root_kind",
+                source_metadata["kind"],
+            ),
         }
     metadata["checkpoint_selection"] = "completed_laps, coverage, lap_time, return"
     write_json(output / "metadata.json", metadata)
@@ -100,6 +107,10 @@ def train(
         model = create_model(config, envs)
         if initial_model is not None:
             source = load_model(initial_model, config)
+            if type(source.policy.action_dist) is not type(model.policy.action_dist):
+                raise ValueError("La distribución de acciones de la inicialización no coincide.")
+            if source.policy.squash_output != model.policy.squash_output:
+                raise ValueError("La transformación de acciones de la inicialización no coincide.")
             model.policy.load_state_dict(source.policy.state_dict())
             with torch.no_grad():
                 model.policy.log_std.fill_(settings.log_std_init)

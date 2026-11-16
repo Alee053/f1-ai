@@ -24,7 +24,10 @@ def parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--output", type=Path, required=True)
     evaluate = commands.add_parser("evaluate", help="Evaluar referencias o un modelo PPO")
     evaluate.add_argument(
-        "--agents", nargs="+", choices=["random", "pursuit", "ppo"], default=["random", "pursuit"]
+        "--agents",
+        nargs="+",
+        choices=["random", "pursuit", "ppo", "bc", "bc-ppo"],
+        default=["random", "pursuit"],
     )
     evaluate.add_argument("--split", choices=["train", "validation", "test"], default="validation")
     evaluate.add_argument("--output", type=Path, required=True)
@@ -115,14 +118,27 @@ def run_benchmark(config, args):
 
 
 def run_evaluate(config, args):
-    if "ppo" in args.agents and args.model is None:
-        raise ValueError("La evaluación PPO requiere --model.")
-    if args.model is not None and "ppo" not in args.agents:
-        raise ValueError("Se indicó un modelo sin incluir ppo en --agents.")
+    learned = set(args.agents) & {"ppo", "bc", "bc-ppo"}
+    if len(learned) > 1:
+        raise ValueError("Un checkpoint solo puede evaluarse bajo una etiqueta de método.")
+    if learned and args.model is None:
+        raise ValueError("La evaluación de la red requiere --model.")
+    if args.model is not None and not learned:
+        raise ValueError("Se indicó un modelo sin incluir una red en --agents.")
     model = None
     if args.model is not None:
         from f1_ai.training import load_model
 
+        with (args.model.parent / "metadata.json").open() as stream:
+            model_metadata = json.load(stream)
+        root = model_metadata.get("initial_policy", {}).get("root_kind")
+        imitated = model_metadata["kind"] in {"behavior_cloning", "dagger"}
+        if "bc" in learned and not imitated:
+            raise ValueError("La etiqueta bc requiere un modelo de imitación.")
+        if "bc-ppo" in learned and root not in {"behavior_cloning", "dagger"}:
+            raise ValueError("La etiqueta bc-ppo requiere PPO inicializado por imitación.")
+        if "ppo" in learned and (imitated or root in {"behavior_cloning", "dagger"}):
+            raise ValueError("El checkpoint incluye imitación: use bc o bc-ppo para identificarlo.")
         model = load_model(args.model, config)
     output = create_directory(args.output)
     factories = {}
@@ -134,7 +150,7 @@ def run_evaluate(config, args):
                 args.reference_speed,
                 args.reference_lateral_acceleration,
             )
-        elif name == "ppo":
+        elif name in learned:
             factories[name] = lambda seed: PPOAgent(model)
     write_json(
         output / "metadata.json",

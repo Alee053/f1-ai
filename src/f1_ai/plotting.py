@@ -10,8 +10,20 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-COLORS = {"random": "#9b4a40", "pursuit": "#236b61", "ppo": "#304f8d"}
-LABELS = {"random": "Aleatorio", "pursuit": "Pure pursuit", "ppo": "PPO"}
+COLORS = {
+    "random": "#9b4a40",
+    "pursuit": "#236b61",
+    "ppo": "#304f8d",
+    "bc": "#8c579a",
+    "bc-ppo": "#c06b23",
+}
+LABELS = {
+    "random": "Aleatorio",
+    "pursuit": "Pure pursuit",
+    "ppo": "PPO",
+    "bc": "Imitación",
+    "bc-ppo": "Imitación + PPO",
+}
 
 
 def plot_evaluation(directory: Path) -> list[Path]:
