@@ -1,0 +1,40 @@
+# Informes y documentos locales. Nunca se incluyen en los commits.
+/docs/
+/reports/
+/output/
+/tmp/
+*.pdf
+*.doc
+*.docx
+*.odt
+*.rtf
+
+# Experimentos, modelos y material generado.
+/runs/
+/artifacts/
+/checkpoints/
+*.zip
+*.pt
+*.pth
+*.onnx
+*.gif
+*.mp4
+
+# Entorno Python y herramientas.
+.venv/
+.artifact-venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Configuración privada.
+.env
+.env.*
+!.env.example
+.DS_Store
