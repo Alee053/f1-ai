@@ -43,6 +43,18 @@ def parser() -> argparse.ArgumentParser:
         "plot-training", help="Exportar la curva de validación de PPO"
     )
     training_plot.add_argument("--run", type=Path, required=True)
+    demonstrations = commands.add_parser(
+        "demonstrations", help="Registrar demostraciones solo en train"
+    )
+    demonstrations.add_argument("--output", type=Path, required=True)
+    demonstrations.add_argument("--target-speed", type=float, default=30.0)
+    demonstrations.add_argument("--lateral-acceleration", type=float, default=8.0)
+    imitation = commands.add_parser("clone", help="Aprender el actor por imitación, antes de PPO")
+    imitation.add_argument("--dataset", type=Path, required=True)
+    imitation.add_argument("--output", type=Path, required=True)
+    imitation.add_argument("--epochs", type=int, default=50)
+    imitation.add_argument("--learning-rate", type=float, default=1e-3)
+    imitation.add_argument("--dagger-rounds", type=int, default=0)
     return root
 
 
@@ -170,6 +182,28 @@ def main():
                 from f1_ai.plotting import plot_training
 
                 print(plot_training(args.run))
+            case "demonstrations":
+                from f1_ai.imitation import record_demonstrations
+
+                result = record_demonstrations(
+                    config,
+                    args.output,
+                    target_speed=args.target_speed,
+                    lateral_acceleration=args.lateral_acceleration,
+                )
+                print(json.dumps(result, indent=2))
+            case "clone":
+                from f1_ai.imitation import clone
+
+                result = clone(
+                    config,
+                    args.dataset,
+                    args.output,
+                    epochs=args.epochs,
+                    learning_rate=args.learning_rate,
+                    dagger_rounds=args.dagger_rounds,
+                )
+                print(json.dumps(result, indent=2))
     except (ValueError, TypeError, OSError) as error:
         raise SystemExit(f"Error: {error}") from error
 
