@@ -142,8 +142,9 @@ PPO completa rollouts enteros, por lo que puede superar ligeramente el número
 solicitado de pasos. Se registra el total real. Cada 25000 interacciones se
 evalúan los circuitos de validación y se guarda un checkpoint. El mejor modelo
 se elige por vueltas completas, cobertura y tiempo, con retorno como último desempate.
-La interrupción con Ctrl+C conserva
-un modelo parcial y el número de interacciones realizadas.
+La interrupción con Ctrl+C o SIGTERM durante el aprendizaje conserva
+`interrupted_model.zip` y registra el motivo y las interacciones en `interrupted.json`.
+Al recibir SIGTERM, el comando termina con código 143 después de guardar el modelo.
 
 Solo deben cargarse checkpoints locales de confianza: SB3 usa serialización
 que puede ejecutar código al abrir archivos de terceros. La carga también

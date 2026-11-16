@@ -2,7 +2,10 @@
 
 import hashlib
 import json
+import signal
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -20,6 +23,28 @@ from f1_ai.artifacts import create_directory, provenance, write_json
 from f1_ai.callbacks import DrivingEvaluation
 from f1_ai.config import EnvironmentConfig, ExperimentConfig
 from f1_ai.environment import OBSERVATION_VERSION, CircuitPool, make_env
+
+
+class _TerminationRequested(KeyboardInterrupt):
+    """Interrupción solicitada por SIGTERM mientras se ejecuta learn."""
+
+
+@contextmanager
+def _interrupt_on_sigterm():
+    # Python solo permite instalar señales en el hilo principal.
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous_handler = signal.getsignal(signal.SIGTERM)
+
+    def request_checkpoint(_signum, _frame):
+        raise _TerminationRequested
+
+    signal.signal(signal.SIGTERM, request_checkpoint)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
 
 
 def create_model(config: ExperimentConfig, env: Env | VecEnv) -> PPO:
@@ -128,16 +153,22 @@ def train(
                 ),
             ]
         try:
-            model.learn(total_timesteps=settings.total_timesteps, callback=callbacks)
-        except KeyboardInterrupt:
+            with _interrupt_on_sigterm():
+                model.learn(total_timesteps=settings.total_timesteps, callback=callbacks)
+        except KeyboardInterrupt as error:
             model.save(output / "interrupted_model.zip")
             write_json(
                 output / "interrupted.json",
                 {
                     "actual_timesteps": model.num_timesteps,
                     "wall_seconds": time.perf_counter() - started,
+                    "reason": "SIGTERM"
+                    if isinstance(error, _TerminationRequested)
+                    else "KeyboardInterrupt",
                 },
             )
+            if isinstance(error, _TerminationRequested):
+                raise SystemExit(128 + signal.SIGTERM) from None
             raise
         model_path = output / "model.zip"
         model.save(model_path)
