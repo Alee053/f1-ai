@@ -127,10 +127,9 @@ def run_evaluate(config, args):
         raise ValueError("Se indicó un modelo sin incluir una red en --agents.")
     model = None
     if args.model is not None:
-        from f1_ai.training import load_model
+        from f1_ai.training import load_model, read_model_metadata
 
-        with (args.model.parent / "metadata.json").open() as stream:
-            model_metadata = json.load(stream)
+        model_metadata = read_model_metadata(args.model)
         root = model_metadata.get("initial_policy", {}).get("root_kind")
         imitated = model_metadata["kind"] in {"behavior_cloning", "dagger"}
         if "bc" in learned and not imitated:

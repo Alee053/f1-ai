@@ -43,6 +43,9 @@ def test_vectorized_training_saves_validation_and_checkpoint(tmp_path: Path):
     assert (output / "best_model.zip").is_file()
     assert (output / "validation" / "evaluations.npz").is_file()
     assert list((output / "checkpoints").glob("*.zip"))
+    checkpoint = next((output / "checkpoints").glob("*.zip"))
+    restored = load_model(checkpoint, config)
+    assert restored.observation_space.shape == (16,)
 
 
 def test_warm_start_records_source_and_updates_weights(tmp_path: Path):

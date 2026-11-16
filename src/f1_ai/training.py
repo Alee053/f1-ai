@@ -89,8 +89,7 @@ def train(
     )
     metadata = provenance(config, kind="ppo_smoke" if smoke else "ppo")
     if initial_model is not None:
-        with (initial_model.parent / "metadata.json").open() as stream:
-            source_metadata = json.load(stream)
+        source_metadata = read_model_metadata(initial_model)
         metadata["initial_policy"] = {
             "model_sha256": hashlib.sha256(initial_model.read_bytes()).hexdigest(),
             "source": str(initial_model),
@@ -173,12 +172,17 @@ def train(
         envs.close()
 
 
+def read_model_metadata(path: Path) -> dict:
+    directory = path.parent.parent if path.parent.name == "checkpoints" else path.parent
+    with (directory / "metadata.json").open(encoding="utf-8") as stream:
+        return json.load(stream)
+
+
 def load_model(path: Path, config: ExperimentConfig) -> PPO:
     """Carga exclusivamente un checkpoint local de confianza con metadatos compatibles."""
     from dataclasses import asdict
 
-    with (path.parent / "metadata.json").open(encoding="utf-8") as stream:
-        metadata = json.load(stream)
+    metadata = read_model_metadata(path)
     if metadata["observation_version"] != OBSERVATION_VERSION:
         raise ValueError("La versión de observaciones del modelo no coincide.")
     recorded_environment = EnvironmentConfig(**metadata["configuration"]["environment"])
