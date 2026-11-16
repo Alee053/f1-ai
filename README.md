@@ -341,3 +341,44 @@ La carga de un checkpoint compara el perfil y todos sus parámetros: rechaza
 utilizarlo con Formula o con una configuración física distinta. Los modelos
 necesitan entrenarse nuevamente para esta dinámica; las comprobaciones breves de
 integración no demuestran conducción aprendida en el perfil nuevo.
+
+### Entrenamiento de Formula
+
+`configs/formula-training.toml` mantiene la física del preset manual y amplía el
+horizonte a 6000 pasos, equivalentes a 120 segundos. Permite evaluar al experto
+inicial, que tarda más de 60 segundos en algunas pistas. Las comparaciones de
+Formula utilizan este mismo horizonte y las mismas condiciones de salida de pista.
+
+La referencia usa la batalla y las unidades del perfil. En Formula añade
+amortiguación de guiñada, anticipa la curva con los cuatro puntos observados y
+convierte la aceleración deseada en fuerza y demanda de pedal. Compensa drag y
+rodadura y limita su demanda de acelerador y freno. Estos límites pertenecen al
+controlador de referencia; el coche conserva patinamiento y bloqueo. Los parámetros
+de la referencia se seleccionaron en las semillas de entrenamiento.
+
+```bash
+uv run f1-ai --config configs/formula-training.toml demonstrations \
+  --target-speed 28 --lateral-acceleration 12 --output runs/formula-demos
+uv run f1-ai --config configs/formula-training.toml clone \
+  --dataset runs/formula-demos --epochs 60 --dagger-rounds 2 \
+  --seed 42 --output runs/formula-clonado
+uv run f1-ai --config configs/formula-training.toml train \
+  --initial-model runs/formula-clonado/best_model.zip \
+  --seed 42 --output runs/formula-ajuste
+uv run f1-ai --config configs/formula-training.toml evaluate --agents bc-ppo \
+  --model runs/formula-ajuste/best_model.zip --split validation \
+  --output runs/formula-validacion
+uv run f1-ai --config configs/formula-evaluation-expanded.toml evaluate --agents bc-ppo \
+  --model runs/formula-ajuste/best_model.zip --split validation \
+  --output runs/formula-validacion-ampliada
+```
+
+La selección utiliza las cinco semillas 100 a 104. La validación ampliada agrega
+las semillas 105 a 119 para describir el checkpoint elegido; no añade etiquetas
+de imitación. Ninguna de estas dos evaluaciones es la prueba final.
+
+El piloto `configs/formula-cold-pilot.toml` permite comprobar PPO desde cero con
+100000 transiciones solicitadas y evaluación cada 25000. Comparte el entorno del
+ajuste por imitación, pero usa otra exploración y tasa de aprendizaje. Un piloto
+corto sin vueltas completas no permite descartar PPO ni comparar métodos con el
+mismo presupuesto. Las semillas 200 a 204 siguen reservadas para la prueba final.
