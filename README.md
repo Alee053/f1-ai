@@ -382,3 +382,10 @@ El piloto `configs/formula-cold-pilot.toml` permite comprobar PPO desde cero con
 ajuste por imitación, pero usa otra exploración y tasa de aprendizaje. Un piloto
 corto sin vueltas completas no permite descartar PPO ni comparar métodos con el
 mismo presupuesto. Las semillas 200 a 204 siguen reservadas para la prueba final.
+
+`configs/formula-training-kl002.toml` prueba `target_kl=0.002` frente a `0.01` desde
+el mismo checkpoint DAgger y la misma semilla. Conserva los demás parámetros de
+optimización, solicita 500000 pasos y evalúa cada 50000. El límite KL puede detener
+antes las épocas de PPO; no limita la distancia acumulada respecto a la imitación
+ni garantiza conservar su conducción. La comparación utiliza el tramo común de
+500000 interacciones y distingue los checkpoints que completan vueltas con salidas.
