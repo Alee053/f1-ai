@@ -103,12 +103,15 @@ def parser() -> argparse.ArgumentParser:
     )
     reference.add_argument("--seed", type=int, default=0)
     reference.add_argument("--steps", type=int, help="Acotar pasos físicos de la comprobación")
+    reference.add_argument("--lookahead-seconds", type=float, default=0.35)
+    reference.add_argument("--speed-gain", type=float, default=0.8)
     for command in (plan, reference):
         command.add_argument("--output", type=Path, required=True)
         command.add_argument("--samples", type=int, default=128)
         command.add_argument("--iterations", type=int, default=12)
         command.add_argument("--max-speed", type=float, default=60, help="Límite en m/s")
         command.add_argument("--grip-fraction", type=float, default=0.75)
+        command.add_argument("--braking-fraction", type=float, default=1.0)
         command.add_argument("--road-margin", type=float, default=0.75, help="Margen en metros")
     return root
 
@@ -262,6 +265,7 @@ def main():
             config = replace(config, ppo=replace(config.ppo, total_timesteps=args.timesteps))
         match args.command:
             case "plan-reference" | "reference":
+                from f1_ai.racing_controller import FollowerConfig
                 from f1_ai.racing_experiment import plan_saved_track, run_reference
                 from f1_ai.racing_line import ReferenceConfig
 
@@ -270,6 +274,7 @@ def main():
                     optimization_steps=args.iterations,
                     speed_limit_m_s=args.max_speed,
                     grip_fraction=args.grip_fraction,
+                    braking_fraction=args.braking_fraction,
                     road_margin_m=args.road_margin,
                 )
                 if args.command == "plan-reference":
@@ -278,7 +283,14 @@ def main():
                     )
                 else:
                     result = run_reference(
-                        config, args.output, seed=args.seed, steps=args.steps, settings=settings
+                        config,
+                        args.output,
+                        seed=args.seed,
+                        steps=args.steps,
+                        settings=settings,
+                        follower=FollowerConfig(
+                            lookahead_seconds=args.lookahead_seconds, speed_gain=args.speed_gain
+                        ),
                     )
                 print(json.dumps(result, indent=2, allow_nan=False))
             case "play":

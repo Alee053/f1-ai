@@ -64,6 +64,19 @@ def test_corrections_are_filtered_and_observed_until_reset():
         env.close()
 
 
+def test_residual_calibration_is_used_by_the_planner_and_follower():
+    config = load_config("configs/formula-residual-braking-cuda.toml").environment
+    env = make_env(config)
+    try:
+        env.reset(seed=0)
+        assert env.controller.plan.config.braking_fraction == 0.50
+        assert env.controller.plan.config.grip_fraction == 0.88
+        assert env.controller.config.lookahead_seconds == 0.28
+        assert env.controller.config.speed_gain == 1.2
+    finally:
+        env.close()
+
+
 def test_reference_time_redistributes_progress_without_changing_clean_lap_return():
     config = load_config("configs/formula-residual-time-cuda.toml").environment
     plain = replace(config, reward_profile="lap-time-v1")

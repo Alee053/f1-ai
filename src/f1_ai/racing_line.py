@@ -22,13 +22,14 @@ class ReferenceConfig:
     speed_limit_m_s: float = 60.0
     grip_fraction: float = 0.75
     road_margin_m: float = 0.75
+    braking_fraction: float = 1.0
 
     def __post_init__(self):
         if type(self.samples) is not int or not 16 <= self.samples <= 512:
             raise ValueError("samples debe pertenecer a [16, 512].")
         if type(self.optimization_steps) is not int or not 0 <= self.optimization_steps <= 64:
             raise ValueError("optimization_steps debe pertenecer a [0, 64].")
-        for name in ("speed_limit_m_s", "grip_fraction", "road_margin_m"):
+        for name in ("speed_limit_m_s", "grip_fraction", "road_margin_m", "braking_fraction"):
             value = getattr(self, name)
             if (
                 isinstance(value, bool)
@@ -40,6 +41,8 @@ class ReferenceConfig:
             raise ValueError("speed_limit_m_s debe pertenecer a [1, 100].")
         if not 0 < self.grip_fraction <= 1 or self.road_margin_m < 0:
             raise ValueError("El margen debe ser no negativo y grip_fraction pertenecer a (0, 1].")
+        if not 0 < self.braking_fraction <= 1:
+            raise ValueError("braking_fraction debe pertenecer a (0, 1].")
 
 
 def _path_geometry(points):
@@ -161,7 +164,10 @@ def _speed_profile(lengths, curvature, vehicle, config):
                 vehicle, speeds[next_index], curvature[next_index], config.grip_fraction
             )
             speeds[index] = min(
-                speeds[index], math.sqrt(speeds[next_index] ** 2 + 2 * brake * lengths[index])
+                speeds[index],
+                math.sqrt(
+                    speeds[next_index] ** 2 + 2 * config.braking_fraction * brake * lengths[index]
+                ),
             )
         if np.max(np.abs(speeds - previous)) < 1e-7:
             break

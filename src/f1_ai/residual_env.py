@@ -8,7 +8,7 @@ import numpy as np
 from gymnasium import spaces
 from gymnasium.envs.box2d.car_racing import FPS, TRACK_WIDTH
 
-from f1_ai.config import REFERENCE_TIME
+from f1_ai.config import REFERENCE_TIME, ReferenceDrivingConfig
 from f1_ai.environment import RACING_OBSERVATION_NAMES, NumericCarRacing
 from f1_ai.racing_controller import RacingController, ReferenceState
 from f1_ai.racing_line import plan_reference
@@ -32,9 +32,9 @@ RESIDUAL_OBSERVATION_NAMES = (
 
 
 @lru_cache(maxsize=32)
-def _track_plan(points_bytes, vehicle):
+def _track_plan(points_bytes, vehicle, settings):
     points = np.frombuffer(points_bytes, dtype=np.float64).reshape(-1, 2)
-    return plan_reference(points, TRACK_WIDTH, vehicle)
+    return plan_reference(points, TRACK_WIDTH, vehicle, settings)
 
 
 class ResidualRacingEnv(gym.Wrapper):
@@ -54,11 +54,14 @@ class ResidualRacingEnv(gym.Wrapper):
         self.filtered = np.zeros(2, dtype=np.float64)
         self.controller = None
         self._timed_progress = env.config.reward_profile == REFERENCE_TIME
+        self._reference = env.config.racing_reference or ReferenceDrivingConfig()
 
     def reset(self, *, seed=None, options=None):
         physical, info = self.env.reset(seed=seed, options=options)
-        plan = _track_plan(self.env.geometry.points.tobytes(), self.env.config.formula)
-        self.controller = RacingController(plan)
+        plan = _track_plan(
+            self.env.geometry.points.tobytes(), self.env.config.formula, self._reference.plan
+        )
+        self.controller = RacingController(plan, self._reference.follower)
         self._speeds = np.r_[plan.speed_m_s, plan.speed_m_s[0]]
         self._curvature = np.r_[plan.curvature_m_inv, plan.curvature_m_inv[0]]
         self.filtered.fill(0)

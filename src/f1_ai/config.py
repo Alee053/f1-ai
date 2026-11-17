@@ -5,11 +5,28 @@ from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
 
+from f1_ai.racing_controller import FollowerConfig
+from f1_ai.racing_line import ReferenceConfig
 from f1_ai.vehicle import FormulaConfig
 
 RACING_RESIDUAL = "racing-residual-v1"
 REFERENCE_TIME = "reference-time-v1"
 LAP_TIME_REWARDS = {"lap-time-v1", REFERENCE_TIME}
+
+
+@dataclass(frozen=True)
+class ReferenceDrivingConfig:
+    plan: ReferenceConfig = ReferenceConfig()
+    follower: FollowerConfig = FollowerConfig()
+
+    def __post_init__(self):
+        for name, cls in (("plan", ReferenceConfig), ("follower", FollowerConfig)):
+            value = getattr(self, name)
+            if isinstance(value, dict):
+                value = cls(**value)
+                object.__setattr__(self, name, value)
+            if not isinstance(value, cls):
+                raise ValueError(f"racing_reference.{name} debe contener una configuración válida.")
 
 
 @dataclass(frozen=True)
@@ -24,6 +41,7 @@ class EnvironmentConfig:
     forward_speed_scale: float = 60.0
     observation_profile: str = "legacy"
     control_profile: str = "direct"
+    racing_reference: ReferenceDrivingConfig | None = None
 
     def __post_init__(self):
         if self.vehicle_model not in {"classic", "formula-v1"}:
@@ -59,6 +77,17 @@ class EnvironmentConfig:
             raise ValueError(f"control_profile debe ser direct o {RACING_RESIDUAL}.")
         if self.control_profile == RACING_RESIDUAL and self.observation_profile != "racing-v2":
             raise ValueError(f"{RACING_RESIDUAL} requiere las mediciones de racing-v2.")
+        if isinstance(self.racing_reference, dict):
+            object.__setattr__(
+                self, "racing_reference", ReferenceDrivingConfig(**self.racing_reference)
+            )
+        if self.racing_reference is not None and (
+            not isinstance(self.racing_reference, ReferenceDrivingConfig)
+            or self.control_profile != RACING_RESIDUAL
+        ):
+            raise ValueError(
+                "racing_reference requiere una configuración de control residual válida."
+            )
         if self.reward_profile not in {"progress", "track", *LAP_TIME_REWARDS}:
             raise ValueError("Perfil de recompensa desconocido.")
         if self.reward_profile == REFERENCE_TIME and self.control_profile != RACING_RESIDUAL:

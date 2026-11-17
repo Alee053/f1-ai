@@ -565,3 +565,19 @@ el tiempo previsto de cada sector. Se estima el tiempo de cada segmento con
 el perfil de velocidad y se reparte el bono de progreso según ese tiempo. Una
 vuelta limpia conserva el mismo bono total. Durante la vuelta, un metro en una
 curva lenta aporta más que un metro en una recta rápida.
+
+`--braking-fraction` reduce el frenado supuesto al calcular el perfil de
+velocidad, para empezar a frenar con más distancia disponible. Conserva el
+límite del actuador en la simulación. En el control residual se pueden fijar
+las opciones del planificador en `[environment.racing_reference.plan]` y las
+del seguidor en `[environment.racing_reference.follower]`. Se registran en
+los metadatos y forman parte del contrato de cada checkpoint.
+
+`formula-residual-braking-cuda.toml` usa una fracción de agarre de 0.88, un
+factor de frenado planificado de 0.50, 0.28 s de anticipación del seguidor y
+ganancia de velocidad de 1.2. Para medir esa referencia con la red desactivada:
+
+```bash
+uv run f1-ai --config configs/formula-residual-braking-cuda.toml evaluate \
+  --agents reference --split validation --output runs/reference-early-braking
+```

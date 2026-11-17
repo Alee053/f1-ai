@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from f1_ai.geometry import CircuitGeometry
-from f1_ai.racing_line import ReferenceConfig, longitudinal_limits, plan_reference
+from f1_ai.racing_line import ReferenceConfig, _speed_profile, longitudinal_limits, plan_reference
 from f1_ai.vehicle import FormulaConfig
 
 
@@ -83,6 +83,20 @@ def test_closed_profile_brakes_before_tight_turns_and_respects_both_limits():
     assert anticipates_braking
 
 
+def test_braking_margin_reduces_entry_speed_before_the_curve():
+    curvature = np.zeros(32)
+    curvature[12:15] = 0.06
+    lengths = np.full(32, 10.0)
+    config = ReferenceConfig(samples=32)
+    nominal, _ = _speed_profile(lengths, curvature, FormulaConfig(), config)
+    early, _ = _speed_profile(
+        lengths, curvature, FormulaConfig(), replace(config, braking_fraction=0.60)
+    )
+    assert early[8] < nominal[8]
+    assert early[11] < nominal[11]
+    assert early[13] == pytest.approx(nominal[13])
+
+
 @pytest.mark.parametrize(
     "settings",
     [
@@ -92,6 +106,7 @@ def test_closed_profile_brakes_before_tight_turns_and_respects_both_limits():
         {"speed_limit_m_s": float("nan")},
         {"grip_fraction": 0},
         {"road_margin_m": -1},
+        {"braking_fraction": 1.5},
     ],
 )
 def test_invalid_planning_settings_are_rejected(settings):
