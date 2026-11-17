@@ -7,7 +7,7 @@ import torch
 from f1_ai.agents import PursuitAgent
 from f1_ai.config import load_config
 from f1_ai.environment import make_env
-from f1_ai.imitation import fit_actor, validate_dataset
+from f1_ai.imitation import clone, fit_actor, record_demonstrations, validate_dataset
 from f1_ai.training import create_model
 
 
@@ -20,6 +20,24 @@ def test_validation_circuits_cannot_enter_imitation_dataset():
     }
     with pytest.raises(ValueError, match="fuera de entrenamiento"):
         validate_dataset(data, config)
+
+
+def test_dagger_retains_the_initial_and_aggregated_labels(tmp_path):
+    config = load_config("configs/ppo.toml")
+    config = replace(
+        config,
+        environment=replace(config.environment, max_steps=4),
+        circuits=replace(config.circuits, train=(0,), validation=(100,)),
+    )
+    dataset, output = tmp_path / "dataset", tmp_path / "imitation"
+    record_demonstrations(config, dataset)
+    clone(config, dataset, output, epochs=1, dagger_rounds=1)
+    with np.load(output / "dataset-round-0.npz", allow_pickle=False) as initial:
+        with np.load(output / "dataset-round-1.npz", allow_pickle=False) as aggregated:
+            assert initial["observations"].shape == (4, 16)
+            assert aggregated["observations"].shape == (8, 16)
+            np.testing.assert_array_equal(aggregated["observations"][:4], initial["observations"])
+            validate_dataset(dict(aggregated), config)
 
 
 @pytest.mark.parametrize("bounded", [False, True])
