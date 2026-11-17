@@ -8,7 +8,7 @@ import numpy as np
 from gymnasium import spaces
 from gymnasium.envs.box2d.car_racing import FPS, PLAYFIELD, TRACK_WIDTH, CarRacing
 
-from f1_ai.config import RACING_RESIDUAL, EnvironmentConfig
+from f1_ai.config import LAP_TIME_REWARDS, RACING_RESIDUAL, EnvironmentConfig
 from f1_ai.geometry import CircuitGeometry, LapProgress
 from f1_ai.rewards import lap_time_step_reward
 
@@ -205,12 +205,13 @@ class NumericCarRacing(CarRacing):
         x, y = self.car.hull.position
         outside = abs(x) > PLAYFIELD or abs(y) > PLAYFIELD
         off_track_failure = self._consecutive_off_track >= self.config.off_track_grace_steps
+        lap_time_profile = self.config.reward_profile in LAP_TIME_REWARDS
         reason = "running"
         if outside:
             reason = "out_of_bounds"
         elif off_track_failure:
             reason = "off_track"
-        elif completed and (not off_track or self.config.reward_profile != "lap-time-v1"):
+        elif completed and (not off_track or not lap_time_profile):
             reason = "lap_complete"
         elif self.elapsed_steps >= self.config.max_steps:
             reason = "time_limit"
@@ -229,7 +230,7 @@ class NumericCarRacing(CarRacing):
                 forward = np.array(self.car.hull.GetWorldVector((0, 1)))
                 aligned = max(0.0, float(np.dot(projection.tangent, forward)))
                 reward = 1000.0 * gain / self.geometry.length * centered * aligned - 0.1
-        elif self.config.reward_profile == "lap-time-v1":
+        elif lap_time_profile:
             hull = self.car.hull
             velocity = np.array(hull.linearVelocity)
             forward = np.array(hull.GetWorldVector((0, 1)))

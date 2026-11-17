@@ -8,9 +8,11 @@ import numpy as np
 from gymnasium import spaces
 from gymnasium.envs.box2d.car_racing import FPS, TRACK_WIDTH
 
+from f1_ai.config import REFERENCE_TIME
 from f1_ai.environment import RACING_OBSERVATION_NAMES, NumericCarRacing
 from f1_ai.racing_controller import RacingController, ReferenceState
 from f1_ai.racing_line import plan_reference
+from f1_ai.rewards import LAP_PROGRESS_POINTS
 
 RESIDUAL_ACTION_NAMES = ("raceline_offset", "target_speed_adjustment")
 PREVIEW_M = np.array([6.0, 15.0, 30.0, 60.0, 100.0])
@@ -51,6 +53,7 @@ class ResidualRacingEnv(gym.Wrapper):
         self.metadata = {**env.metadata, "render_fps": FPS // self.steps_per_action}
         self.filtered = np.zeros(2, dtype=np.float64)
         self.controller = None
+        self._timed_progress = env.config.reward_profile == REFERENCE_TIME
 
     def reset(self, *, seed=None, options=None):
         physical, info = self.env.reset(seed=seed, options=options)
@@ -59,7 +62,20 @@ class ResidualRacingEnv(gym.Wrapper):
         self._speeds = np.r_[plan.speed_m_s, plan.speed_m_s[0]]
         self._curvature = np.r_[plan.curvature_m_inv, plan.curvature_m_inv[0]]
         self.filtered.fill(0)
+        if self._timed_progress:
+            # Los puntos del plan corresponden a muestras equiespaciadas del eje original.
+            segment_seconds = (
+                2 * self.controller.geometry.lengths / (self._speeds[:-1] + self._speeds[1:])
+            )
+            cumulative_seconds = np.r_[0, np.cumsum(segment_seconds)]
+            self._time_fraction = cumulative_seconds / cumulative_seconds[-1]
+            self._track_fraction = np.linspace(0, 1, len(self._time_fraction))
         return self._observation(physical), info
+
+    def _reference_time_fraction(self, forward_distance):
+        progress = self.env.progress
+        laps, phase = divmod((progress.start + forward_distance) / progress.length, 1.0)
+        return laps + float(np.interp(phase, self._track_fraction, self._time_fraction))
 
     def _observation(self, physical):
         hull = self.env.car.hull
@@ -105,6 +121,7 @@ class ResidualRacingEnv(gym.Wrapper):
             raise ValueError("La corrección debe contener dos valores finitos en [-1, 1].")
         reward_sum = native_sum = speed_sum = max_slip = variation = 0.0
         lock_steps = 0
+        progress = self.env.progress
         for _ in range(self.steps_per_action):
             self.filtered += self.filter_gain * (action - self.filtered)
             command = self.controller.action(
@@ -114,7 +131,17 @@ class ResidualRacingEnv(gym.Wrapper):
                 speed_factor=1 + self.max_speed_adjustment * self.filtered[1],
             )
             variation += abs(float(command[0] - self.env.previous_action[0]))
+            previous_distance = progress.furthest
+            previous_off_track = self.env.off_track_steps
             physical, reward, terminated, truncated, info = self.env.step(command)
+            if self._timed_progress and info["off_track_steps"] == previous_off_track:
+                current_distance = progress.furthest
+                if current_distance > previous_distance:
+                    time_gain = self._reference_time_fraction(
+                        current_distance
+                    ) - self._reference_time_fraction(previous_distance)
+                    distance_gain = (current_distance - previous_distance) / progress.length
+                    reward += LAP_PROGRESS_POINTS * (time_gain - distance_gain)
             reward_sum += reward
             native_sum += info["native_reward"]
             speed_sum += info["speed"]

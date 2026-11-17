@@ -4,8 +4,10 @@ import numpy as np
 import pytest
 import torch
 
+from f1_ai.agents import ZeroCorrectionAgent
 from f1_ai.config import load_config
 from f1_ai.environment import make_env, observation_contract
+from f1_ai.evaluation import evaluate_episode
 from f1_ai.racing_controller import RacingController, ReferenceState
 from f1_ai.training import create_model, load_model, train
 
@@ -60,6 +62,31 @@ def test_corrections_are_filtered_and_observed_until_reset():
         assert observation[-2:].tolist() == [0, 0]
     finally:
         env.close()
+
+
+def test_reference_time_redistributes_progress_without_changing_clean_lap_return():
+    config = load_config("configs/formula-residual-time-cuda.toml").environment
+    plain = replace(config, reward_profile="lap-time-v1")
+    neutral = ZeroCorrectionAgent()
+    timed_lap = evaluate_episode(config, neutral, 1, agent_name="reference-time")
+    plain_lap = evaluate_episode(plain, neutral, 1, agent_name="reference")
+    assert timed_lap["lap_complete"] and plain_lap["lap_complete"]
+    assert timed_lap["lap_time_seconds"] == plain_lap["lap_time_seconds"]
+    assert timed_lap["off_track_steps"] == plain_lap["off_track_steps"] == 0
+    assert timed_lap["return"] == pytest.approx(plain_lap["return"], abs=1e-8)
+
+    timed = make_env(config)
+    original = make_env(plain)
+    try:
+        timed.reset(seed=1)
+        original.reset(seed=1)
+        for _ in range(15):
+            _, timed_value, *_ = timed.step(np.zeros(2, dtype=np.float32))
+            _, original_value, *_ = original.step(np.zeros(2, dtype=np.float32))
+        assert abs(timed_value - original_value) > 0.01
+    finally:
+        timed.close()
+        original.close()
 
 
 def test_residual_ppo_starts_at_the_reference_and_cuda_checkpoint_has_correct_contract(tmp_path):

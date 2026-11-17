@@ -16,7 +16,7 @@ from stable_baselines3 import PPO
 
 from f1_ai.agents import PPOAgent, PursuitAgent
 from f1_ai.artifacts import create_directory, provenance, write_json
-from f1_ai.config import RACING_RESIDUAL, EnvironmentConfig, ExperimentConfig
+from f1_ai.config import LAP_TIME_REWARDS, RACING_RESIDUAL, EnvironmentConfig, ExperimentConfig
 from f1_ai.environment import make_env, observation_contract
 from f1_ai.evaluation import driving_score, evaluate_episode, summarize
 from f1_ai.racing_controller import FollowerConfig, RacingController, ReferenceState
@@ -215,7 +215,7 @@ def clone(
             "dagger_rounds": dagger_rounds,
             "only_training_labels": True,
             "checkpoint_selection": "clean_laps, completed_laps, clean_lap_time, coverage"
-            if config.environment.reward_profile == "lap-time-v1"
+            if config.environment.reward_profile in LAP_TIME_REWARDS
             else "completed_laps, coverage, lap_time",
         }
         metadata["execution"] = {
@@ -261,7 +261,7 @@ def clone(
             ]
             summary = summarize(episodes)
             score = driving_score(
-                summary, prioritize_clean_time=config.environment.reward_profile == "lap-time-v1"
+                summary, prioritize_clean_time=config.environment.reward_profile in LAP_TIME_REWARDS
             )
             record = {
                 "round": round_index,

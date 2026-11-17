@@ -20,7 +20,13 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv
 
 from f1_ai.artifacts import create_directory, provenance, write_json
 from f1_ai.callbacks import DrivingEvaluation
-from f1_ai.config import RACING_RESIDUAL, EnvironmentConfig, ExperimentConfig, PPOConfig
+from f1_ai.config import (
+    LAP_TIME_REWARDS,
+    RACING_RESIDUAL,
+    EnvironmentConfig,
+    ExperimentConfig,
+    PPOConfig,
+)
 from f1_ai.environment import CircuitPool, make_env, observation_contract
 from f1_ai.supervision import ActorRehearsal, RehearsalPPO
 
@@ -173,7 +179,7 @@ def train(
         }
     metadata["checkpoint_selection"] = (
         "clean_laps, completed_laps, clean_lap_time, coverage, return"
-        if config.environment.reward_profile == "lap-time-v1"
+        if config.environment.reward_profile in LAP_TIME_REWARDS
         else "completed_laps, coverage, lap_time, return"
     )
     started = time.perf_counter()

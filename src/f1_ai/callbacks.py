@@ -8,7 +8,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 from f1_ai.agents import PPOAgent
 from f1_ai.artifacts import write_json
-from f1_ai.config import ExperimentConfig
+from f1_ai.config import LAP_TIME_REWARDS, ExperimentConfig
 from f1_ai.evaluation import driving_score, evaluate_episode, summarize
 
 
@@ -32,7 +32,8 @@ class DrivingEvaluation(BaseCallback):
         ]
         summary = summarize(episodes)
         ranking = driving_score(
-            summary, prioritize_clean_time=self.config.environment.reward_profile == "lap-time-v1"
+            summary,
+            prioritize_clean_time=self.config.environment.reward_profile in LAP_TIME_REWARDS,
         )
         score = (*ranking, summary["mean_return"])
         record = {"timesteps": self.num_timesteps, "summary": summary, "episodes": episodes}

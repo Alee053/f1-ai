@@ -8,6 +8,8 @@ from pathlib import Path
 from f1_ai.vehicle import FormulaConfig
 
 RACING_RESIDUAL = "racing-residual-v1"
+REFERENCE_TIME = "reference-time-v1"
+LAP_TIME_REWARDS = {"lap-time-v1", REFERENCE_TIME}
 
 
 @dataclass(frozen=True)
@@ -57,12 +59,18 @@ class EnvironmentConfig:
             raise ValueError(f"control_profile debe ser direct o {RACING_RESIDUAL}.")
         if self.control_profile == RACING_RESIDUAL and self.observation_profile != "racing-v2":
             raise ValueError(f"{RACING_RESIDUAL} requiere las mediciones de racing-v2.")
-        if self.reward_profile not in {"progress", "track", "lap-time-v1"}:
-            raise ValueError("El perfil de recompensa debe ser progress, track o lap-time-v1.")
+        if self.reward_profile not in {"progress", "track", *LAP_TIME_REWARDS}:
+            raise ValueError("Perfil de recompensa desconocido.")
+        if self.reward_profile == REFERENCE_TIME and self.control_profile != RACING_RESIDUAL:
+            raise ValueError(
+                f"{REFERENCE_TIME} requiere la trazada de referencia del control residual."
+            )
         if self.vehicle_model != "formula-v1" and (
-            self.observation_profile == "racing-v2" or self.reward_profile == "lap-time-v1"
+            self.observation_profile == "racing-v2" or self.reward_profile in LAP_TIME_REWARDS
         ):
-            raise ValueError("Los perfiles racing-v2 y lap-time-v1 requieren Formula.")
+            raise ValueError(
+                "Las observaciones racing-v2 y los perfiles de tiempo requieren Formula."
+            )
 
 
 @dataclass(frozen=True)

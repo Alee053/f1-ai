@@ -559,3 +559,9 @@ uv run f1-ai --config configs/formula-residual-cuda.toml evaluate \
   --agents reference ppo --split validation \
   --model runs/formula-residual-ppo/best_model.zip --output runs/residual-comparison
 ```
+
+`formula-residual-time-cuda.toml` mantiene la política y pondera el avance por
+el tiempo previsto de cada sector. Se estima el tiempo de cada segmento con
+el perfil de velocidad y se reparte el bono de progreso según ese tiempo. Una
+vuelta limpia conserva el mismo bono total. Durante la vuelta, un metro en una
+curva lenta aporta más que un metro en una recta rápida.
