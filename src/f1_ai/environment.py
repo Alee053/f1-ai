@@ -8,7 +8,7 @@ import numpy as np
 from gymnasium import spaces
 from gymnasium.envs.box2d.car_racing import FPS, PLAYFIELD, TRACK_WIDTH, CarRacing
 
-from f1_ai.config import EnvironmentConfig
+from f1_ai.config import RACING_RESIDUAL, EnvironmentConfig
 from f1_ai.geometry import CircuitGeometry, LapProgress
 from f1_ai.rewards import lap_time_step_reward
 
@@ -48,10 +48,18 @@ RACING_OBSERVATION_NAMES = (
 )
 
 
-def observation_contract(config: EnvironmentConfig) -> tuple[int, tuple[str, ...]]:
+def _direct_observation_contract(config: EnvironmentConfig) -> tuple[int, tuple[str, ...]]:
     if config.observation_profile == "racing-v2":
         return 2, RACING_OBSERVATION_NAMES
     return OBSERVATION_VERSION, OBSERVATION_NAMES
+
+
+def observation_contract(config: EnvironmentConfig) -> tuple[int, tuple[str, ...]]:
+    if config.control_profile == RACING_RESIDUAL:
+        from f1_ai.residual_env import RESIDUAL_OBSERVATION_NAMES
+
+        return 3, RESIDUAL_OBSERVATION_NAMES
+    return _direct_observation_contract(config)
 
 
 class NumericCarRacing(CarRacing):
@@ -73,7 +81,7 @@ class NumericCarRacing(CarRacing):
         )
         self.config = config
         self.observation_space = spaces.Box(
-            -1.0, 1.0, shape=(len(observation_contract(config)[1]),), dtype=np.float32
+            -1.0, 1.0, shape=(len(_direct_observation_contract(config)[1]),), dtype=np.float32
         )
         self.action_space = spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32)
         self.geometry: CircuitGeometry | None = None
@@ -260,8 +268,13 @@ class NumericCarRacing(CarRacing):
         }
 
 
-def make_env(config: EnvironmentConfig, render_mode: str | None = None) -> NumericCarRacing:
-    return NumericCarRacing(config, render_mode=render_mode)
+def make_env(config: EnvironmentConfig, render_mode: str | None = None) -> gym.Env:
+    env = NumericCarRacing(config, render_mode=render_mode)
+    if config.control_profile == RACING_RESIDUAL:
+        from f1_ai.residual_env import ResidualRacingEnv
+
+        return ResidualRacingEnv(env)
+    return env
 
 
 class CircuitPool(gym.Wrapper):

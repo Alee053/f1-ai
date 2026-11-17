@@ -9,7 +9,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 from f1_ai.agents import PPOAgent
 from f1_ai.artifacts import write_json
 from f1_ai.config import ExperimentConfig
-from f1_ai.evaluation import evaluate_episode, summarize
+from f1_ai.evaluation import driving_score, evaluate_episode, summarize
 
 
 class DrivingEvaluation(BaseCallback):
@@ -31,15 +31,10 @@ class DrivingEvaluation(BaseCallback):
             for seed in self.config.circuits.validation
         ]
         summary = summarize(episodes)
-        # Para cero éxitos, el tercer componente no discrimina.
-        score = (
-            summary["completed_laps"],
-            summary["mean_coverage"],
-            -(summary["mean_lap_time_seconds"] or float("inf")),
-            summary["mean_return"],
+        ranking = driving_score(
+            summary, prioritize_clean_time=self.config.environment.reward_profile == "lap-time-v1"
         )
-        if self.config.environment.reward_profile == "lap-time-v1":
-            score = (summary["clean_completed_laps"], *score)
+        score = (*ranking, summary["mean_return"])
         record = {"timesteps": self.num_timesteps, "summary": summary, "episodes": episodes}
         self.history.append(record)
         np.savez_compressed(
@@ -69,6 +64,7 @@ class DrivingEvaluation(BaseCallback):
         print(
             f"[evaluation] steps={self.num_timesteps} "
             f"laps={summary['completed_laps']}/{summary['episodes']} "
+            f"clean={summary['clean_completed_laps']} "
             f"coverage={summary['mean_coverage']:.3f} return={summary['mean_return']:.2f}",
             flush=True,
         )

@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
 
-from f1_ai.config import ExperimentConfig
+from f1_ai.config import RACING_RESIDUAL, ExperimentConfig
 from f1_ai.environment import observation_contract
 
 
@@ -26,6 +26,11 @@ def write_json(path: Path, data) -> None:
 
 def provenance(config: ExperimentConfig, *, kind: str) -> dict:
     observation_version, observation_names = observation_contract(config.environment)
+    action_names = ("steering", "signed_acceleration")
+    if config.environment.control_profile == RACING_RESIDUAL:
+        from f1_ai.residual_env import RESIDUAL_ACTION_NAMES
+
+        action_names = RESIDUAL_ACTION_NAMES
     revision = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         capture_output=True,
@@ -50,6 +55,6 @@ def provenance(config: ExperimentConfig, *, kind: str) -> dict:
         },
         "observation_version": observation_version,
         "observation_names": observation_names,
-        "action_names": ["steering", "signed_acceleration"],
+        "action_names": action_names,
         "configuration": asdict(config),
     }

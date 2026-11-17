@@ -7,6 +7,8 @@ from pathlib import Path
 
 from f1_ai.vehicle import FormulaConfig
 
+RACING_RESIDUAL = "racing-residual-v1"
+
 
 @dataclass(frozen=True)
 class EnvironmentConfig:
@@ -19,6 +21,7 @@ class EnvironmentConfig:
     formula: FormulaConfig | None = None
     forward_speed_scale: float = 60.0
     observation_profile: str = "legacy"
+    control_profile: str = "direct"
 
     def __post_init__(self):
         if self.vehicle_model not in {"classic", "formula-v1"}:
@@ -50,6 +53,10 @@ class EnvironmentConfig:
             raise ValueError("La escala de dirección debe pertenecer a (0, 1].")
         if self.observation_profile not in {"legacy", "racing-v2"}:
             raise ValueError("observation_profile debe ser legacy o racing-v2.")
+        if self.control_profile not in {"direct", RACING_RESIDUAL}:
+            raise ValueError(f"control_profile debe ser direct o {RACING_RESIDUAL}.")
+        if self.control_profile == RACING_RESIDUAL and self.observation_profile != "racing-v2":
+            raise ValueError(f"{RACING_RESIDUAL} requiere las mediciones de racing-v2.")
         if self.reward_profile not in {"progress", "track", "lap-time-v1"}:
             raise ValueError("El perfil de recompensa debe ser progress, track o lap-time-v1.")
         if self.vehicle_model != "formula-v1" and (

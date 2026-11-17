@@ -21,6 +21,13 @@ class RandomAgent:
         return self.rng.uniform(-1, 1, size=2).astype(np.float32)
 
 
+class ZeroCorrectionAgent:
+    """Deja que el seguidor de la trazada aplique sus mandos originales."""
+
+    def action(self, observation: np.ndarray) -> np.ndarray:
+        return np.zeros(2, dtype=np.float32)
+
+
 class PursuitAgent:
     """Pure pursuit con regulación de velocidad, sin aprendizaje.
 
@@ -93,7 +100,10 @@ class PursuitAgent:
 
 class PPOAgent:
     def __init__(self, model):
+        from f1_ai.residual_env import RESIDUAL_OBSERVATION_NAMES
+
         valid_shapes = {(len(OBSERVATION_NAMES),), (len(RACING_OBSERVATION_NAMES),)}
+        valid_shapes.add((len(RESIDUAL_OBSERVATION_NAMES),))
         if model.observation_space.shape not in valid_shapes or model.action_space.shape != (2,):
             raise ValueError("El modelo no usa los espacios de observación y acción del proyecto.")
         self.model = model

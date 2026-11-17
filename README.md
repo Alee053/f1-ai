@@ -535,3 +535,27 @@ uv run f1-ai --config configs/formula-racing-rehearsal-cuda.toml train \
   --rehearsal-dataset runs/racing-dagger-dataset \
   --output runs/racing-ppo-rehearsal
 ```
+
+### PPO con correcciones de trazada y velocidad
+
+`formula-residual-cuda.toml` usa el contrato de observación 3. La política recibe
+la trazada, sus velocidades y curvaturas hasta 100 m por delante y el estado
+del coche. Cada 0.1 s propone desplazamientos de hasta 1.6 m y correcciones de
+hasta ±25 % de la velocidad objetivo. Se filtran las consignas y el seguidor
+actúa a 50 Hz. Con correcciones cero se reproduce el controlador original.
+
+La recompensa se suma por paso físico. El presupuesto de PPO cuenta decisiones
+de la red, con hasta cinco pasos físicos por decisión. La selección prioriza
+vueltas limpias, vueltas completas y tiempo medio de las vueltas limpias, en ese
+orden. El tiempo entre métodos debe compararse en las mismas pistas completadas.
+La inferencia de este perfil requiere el planificador y el seguidor, además de la
+red. Es una aplicación de la idea de un controlador residual, descrita para coches
+de carreras por [Trumpp et al. (2023)](https://arxiv.org/abs/2302.07035).
+
+```bash
+uv run f1-ai --config configs/formula-residual-cuda.toml train \
+  --output runs/formula-residual-ppo
+uv run f1-ai --config configs/formula-residual-cuda.toml evaluate \
+  --agents reference ppo --split validation \
+  --model runs/formula-residual-ppo/best_model.zip --output runs/residual-comparison
+```

@@ -92,13 +92,23 @@ class RacingController:
         self.config = config
         self.geometry = CircuitGeometry(plan.points)
         self._periodic_speed = np.r_[plan.speed_m_s, plan.speed_m_s[0]]
+        self._periodic_offset = np.r_[plan.offsets_m, plan.offsets_m[0]]
+        self._usable_width = (
+            plan.half_width_m - plan.vehicle.width_m / 2 - plan.config.road_margin_m
+        )
         self.reset()
 
     def reset(self):
         self._last_action = np.zeros(2, dtype=np.float64)
 
     def action(
-        self, state: ReferenceState, dt: float = 0.02, *, previous_action: np.ndarray | None = None
+        self,
+        state: ReferenceState,
+        dt: float = 0.02,
+        *,
+        previous_action: np.ndarray | None = None,
+        lateral_offset_m: float = 0.0,
+        speed_factor: float = 1.0,
     ) -> np.ndarray:
         if (
             isinstance(dt, bool)
@@ -107,6 +117,12 @@ class RacingController:
             or not 0 < dt <= 0.2
         ):
             raise ValueError("dt debe pertenecer a (0, 0.2] segundos.")
+        if (
+            not math.isfinite(lateral_offset_m)
+            or not math.isfinite(speed_factor)
+            or speed_factor <= 0
+        ):
+            raise ValueError("La corrección debe ser finita y el factor de velocidad positivo.")
         if previous_action is not None:
             previous_action = np.asarray(previous_action, dtype=np.float64)
             if (
@@ -123,15 +139,27 @@ class RacingController:
         speed = max(0.0, float(np.dot(state.velocity, forward)))
         projection = self.geometry.project(np.array(state.position))
         lookahead = float(np.clip(speed * self.config.lookahead_seconds, 6.0, 24.0))
-        target = self.geometry.sample(np.array([projection.distance + lookahead]))[0]
+        target_distance = (projection.distance + lookahead) % self.geometry.length
+        target = self.geometry.sample(np.array([target_distance]))[0]
+        if lateral_offset_m:
+            offset = np.interp(target_distance, self.geometry.cumulative, self._periodic_offset)
+            shift = np.clip(
+                lateral_offset_m, -self._usable_width - offset, self._usable_width - offset
+            )
+            before, after = self.geometry.sample(target_distance + np.array([-1.0, 1.0]))
+            tangent = after - before
+            norm = np.linalg.norm(tangent)
+            if norm > 1e-8:
+                target += shift * np.array([tangent[1], -tangent[0]]) / norm
         relative = target - state.position
         curvature_right = 2 * float(relative @ right) / max(float(relative @ relative), 1.0)
         steering_angle = math.atan(vehicle.wheelbase_m * curvature_right)
         steering_angle += 0.08 * (speed * curvature_right + state.yaw_rate_rad_s)
         steering = float(np.clip(steering_angle / MAX_STEERING_RAD, -1, 1))
 
-        desired_speed = float(
-            np.interp(projection.distance, self.geometry.cumulative, self._periodic_speed)
+        desired_speed = (
+            float(np.interp(projection.distance, self.geometry.cumulative, self._periodic_speed))
+            * speed_factor
         )
         index = min(
             int(np.searchsorted(self.geometry.cumulative, projection.distance, side="right") - 1),
@@ -141,6 +169,7 @@ class RacingController:
         feedforward = (self.plan.speed_m_s[next_index] ** 2 - self.plan.speed_m_s[index] ** 2) / (
             2 * self.geometry.lengths[index]
         )
+        feedforward *= speed_factor**2
         actual_curvature = abs(state.yaw_rate_rad_s) / max(speed, 3.0)
         accel_limit, brake_limit, feasible = longitudinal_limits(
             vehicle, speed, actual_curvature, self.plan.config.grip_fraction

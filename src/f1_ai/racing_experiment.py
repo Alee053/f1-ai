@@ -11,7 +11,7 @@ import numpy as np
 from gymnasium.envs.box2d.car_racing import FPS, TRACK_WIDTH
 
 from f1_ai.artifacts import create_directory, provenance, write_json
-from f1_ai.config import ExperimentConfig
+from f1_ai.config import RACING_RESIDUAL, ExperimentConfig
 from f1_ai.environment import make_env
 from f1_ai.racing_controller import FollowerConfig, RacingController, ReferenceState
 from f1_ai.racing_line import ReferenceConfig, plan_reference
@@ -76,6 +76,8 @@ def run_reference(
     follower: FollowerConfig | None = None,
 ) -> dict:
     """Ensayo instrumental en train. El experto nunca usa la recompensa."""
+    if config.environment.control_profile == RACING_RESIDUAL:
+        raise ValueError("Use evaluate --agents reference para evaluar cero correcciones.")
     if settings is None:
         settings = ReferenceConfig()
     if follower is None:

@@ -1,4 +1,4 @@
-"""Vídeo de una política cargada, sin controlador de referencia en la inferencia."""
+"""Vídeo de una política cargada bajo su propio contrato de control."""
 
 import hashlib
 import os
@@ -11,7 +11,7 @@ from matplotlib.image import imsave
 
 from f1_ai.agents import PPOAgent
 from f1_ai.artifacts import write_json
-from f1_ai.config import ExperimentConfig
+from f1_ai.config import RACING_RESIDUAL, ExperimentConfig
 from f1_ai.environment import make_env
 from f1_ai.training import load_model, read_model_metadata
 
@@ -22,13 +22,16 @@ def record_replay(
     output: Path,
     *,
     seed: int = 100,
-    stride: int = 2,
+    stride: int | None = None,
 ) -> dict:
     encoder = shutil.which("ffmpeg")
     if encoder is None:
         raise FileNotFoundError("La exportación de vídeo requiere ffmpeg.")
-    if output.suffix.lower() != ".mp4" or stride <= 0 or 50 % stride:
-        raise ValueError("Use una salida MP4 y un salto de cuadros que divida 50.")
+    residual = config.environment.control_profile == RACING_RESIDUAL
+    if stride is None:
+        stride = 1 if residual else 2
+    if output.suffix.lower() != ".mp4" or type(stride) is not int or stride <= 0:
+        raise ValueError("Use una salida MP4 y un salto de cuadros positivo.")
     metadata_path = output.with_suffix(".json")
     snapshot_path = output.with_suffix(".png")
     if any(path.exists() for path in (output, metadata_path, snapshot_path)):
@@ -42,6 +45,10 @@ def record_replay(
     frames = 0
     snapshot_saved = False
     try:
+        decision_fps = env.metadata["render_fps"]
+        if decision_fps % stride:
+            raise ValueError(f"El salto de cuadros debe dividir {decision_fps}.")
+        fps = decision_fps // stride
         observation, _ = env.reset(seed=seed)
         frame = env.render()
         height, width, channels = frame.shape
@@ -61,7 +68,7 @@ def record_replay(
                 "-s",
                 f"{width}x{height}",
                 "-r",
-                str(50 // stride),
+                str(fps),
                 "-i",
                 "pipe:0",
                 "-an",
@@ -85,13 +92,15 @@ def record_replay(
         process.stdin.write(np.ascontiguousarray(frame).tobytes())
         frames += 1
         terminated = truncated = False
+        decisions = 0
         while not (terminated or truncated):
             observation, _, terminated, truncated, info = env.step(agent.action(observation))
-            if env.elapsed_steps % stride == 0 or terminated or truncated:
+            decisions += 1
+            if decisions % stride == 0 or terminated or truncated:
                 frame = env.render()
                 process.stdin.write(np.ascontiguousarray(frame).tobytes())
                 frames += 1
-                if not snapshot_saved and env.elapsed_steps >= 300:
+                if not snapshot_saved and env.unwrapped.elapsed_steps >= 300:
                     imsave(snapshot_path, frame)
                     snapshot_saved = True
         process.stdin.close()
@@ -104,6 +113,8 @@ def record_replay(
         source = read_model_metadata(model_path)
         root_kind = source.get("initial_policy", {}).get("root_kind")
         method = "imitation+ppo" if root_kind in {"behavior_cloning", "dagger"} else source["kind"]
+        if residual:
+            method = "residual-ppo"
         result = {
             "model": str(model_path),
             "model_sha256": hashlib.sha256(model_path.read_bytes()).hexdigest(),
@@ -111,13 +122,13 @@ def record_replay(
             "method": method,
             "seed": seed,
             "frames": frames,
-            "fps": 50 // stride,
+            "fps": fps,
             "simulated_seconds": info["simulated_seconds"],
             "coverage": info["coverage"],
             "lap_complete": info["lap_complete"],
             "termination_reason": info["termination_reason"],
             "off_track_steps": info["off_track_steps"],
-            "neural_policy_only": True,
+            "neural_policy_only": not residual,
             "hud_reward": "native CarRacing score; evaluation uses its documented reward profile",
         }
         write_json(metadata_path, result)

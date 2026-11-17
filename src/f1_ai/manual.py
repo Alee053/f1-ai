@@ -11,7 +11,7 @@ import numpy as np
 import pygame
 
 from f1_ai.artifacts import create_directory, provenance, write_json
-from f1_ai.config import ExperimentConfig
+from f1_ai.config import RACING_RESIDUAL, ExperimentConfig
 from f1_ai.controls import DrivingInput, XboxInput
 from f1_ai.environment import make_env
 from f1_ai.vehicle import GRAVITY
@@ -77,6 +77,8 @@ def export_config(config: ExperimentConfig, path: Path):
 
 class ManualSession:
     def __init__(self, config: ExperimentConfig, seed: int):
+        if config.environment.control_profile == RACING_RESIDUAL:
+            raise ValueError("La conducción manual requiere mandos directos.")
         if seed not in config.circuits.train:
             raise ValueError(
                 "La práctica utiliza circuitos de entrenamiento; elija una semilla de train."

@@ -20,7 +20,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv
 
 from f1_ai.artifacts import create_directory, provenance, write_json
 from f1_ai.callbacks import DrivingEvaluation
-from f1_ai.config import EnvironmentConfig, ExperimentConfig, PPOConfig
+from f1_ai.config import RACING_RESIDUAL, EnvironmentConfig, ExperimentConfig, PPOConfig
 from f1_ai.environment import CircuitPool, make_env, observation_contract
 from f1_ai.supervision import ActorRehearsal, RehearsalPPO
 
@@ -58,7 +58,7 @@ def require_device(device: str) -> str:
 def create_model(config: ExperimentConfig, env: Env | VecEnv, *, rehearsal: bool = False) -> PPO:
     settings = config.ppo
     algorithm = RehearsalPPO if rehearsal else PPO
-    return algorithm(
+    model = algorithm(
         "MlpPolicy",
         env,
         seed=settings.seed,
@@ -81,6 +81,12 @@ def create_model(config: ExperimentConfig, env: Env | VecEnv, *, rehearsal: bool
             "squash_output": settings.squash_output,
         },
     )
+    if config.environment.control_profile == RACING_RESIDUAL:
+        # La política determinista inicial aplica la referencia sin correcciones.
+        with torch.no_grad():
+            model.policy.action_net.weight.zero_()
+            model.policy.action_net.bias.zero_()
+    return model
 
 
 def make_training_envs(config: ExperimentConfig) -> VecEnv:
@@ -112,6 +118,8 @@ def train(
 ) -> dict:
     if initial_model is not None and resume_model is not None:
         raise ValueError("Elija inicialización de pesos o reanudación, no ambas.")
+    if rehearsal_dataset is not None and config.environment.control_profile == RACING_RESIDUAL:
+        raise ValueError("El repaso BC usa mandos directos, no correcciones de la trazada.")
     if resume_model is not None:
         if smoke:
             raise ValueError("La prueba smoke no permite reanudar un entrenamiento.")
@@ -164,7 +172,7 @@ def train(
             ),
         }
     metadata["checkpoint_selection"] = (
-        "clean_laps, completed_laps, coverage, lap_time, return"
+        "clean_laps, completed_laps, clean_lap_time, coverage, return"
         if config.environment.reward_profile == "lap-time-v1"
         else "completed_laps, coverage, lap_time, return"
     )

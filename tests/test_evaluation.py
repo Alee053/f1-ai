@@ -2,7 +2,7 @@ import pytest
 
 from f1_ai.agents import PursuitAgent
 from f1_ai.config import EnvironmentConfig
-from f1_ai.evaluation import evaluate_episode, summarize
+from f1_ai.evaluation import driving_score, evaluate_episode, summarize
 
 
 def test_failed_episodes_do_not_produce_a_lap_time():
@@ -44,6 +44,24 @@ def test_clean_laps_exclude_successes_with_off_track_steps():
     )
     assert summary["completed_laps"] == 2
     assert summary["clean_completed_laps"] == 1
+
+
+def test_lap_time_ranking_cannot_prefer_a_slower_clean_lap_for_more_coverage():
+    clean = {"lap_complete": True, "off_track_fraction": 0, "return": 1, "coverage": 1}
+    unfinished = {
+        "lap_complete": False,
+        "off_track_fraction": 0.1,
+        "lap_time_seconds": None,
+        "return": 0,
+    }
+    faster = summarize([{**clean, "lap_time_seconds": 47.35}, {**unfinished, "coverage": 0.91}])
+    slower = summarize([{**clean, "lap_time_seconds": 51.47}, {**unfinished, "coverage": 0.92}])
+    assert driving_score(faster, prioritize_clean_time=True) > driving_score(
+        slower, prioritize_clean_time=True
+    )
+    assert driving_score(faster, prioritize_clean_time=False) < driving_score(
+        slower, prioritize_clean_time=False
+    )
 
 
 def test_reference_controller_completes_a_forward_lap():

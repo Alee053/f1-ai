@@ -9,9 +9,9 @@ from pathlib import Path
 
 from gymnasium.envs.box2d.car_racing import TRACK_WIDTH
 
-from f1_ai.agents import PPOAgent, PursuitAgent, RandomAgent
+from f1_ai.agents import PPOAgent, PursuitAgent, RandomAgent, ZeroCorrectionAgent
 from f1_ai.artifacts import create_directory, provenance, write_json
-from f1_ai.config import load_config
+from f1_ai.config import RACING_RESIDUAL, load_config
 from f1_ai.environment import make_env
 from f1_ai.evaluation import evaluate_agents
 
@@ -28,7 +28,7 @@ def parser() -> argparse.ArgumentParser:
     evaluate.add_argument(
         "--agents",
         nargs="+",
-        choices=["random", "pursuit", "ppo", "bc", "bc-ppo"],
+        choices=["random", "pursuit", "reference", "ppo", "bc", "bc-ppo"],
         default=["random", "pursuit"],
     )
     evaluate.add_argument("--split", choices=["train", "validation", "test"], default="validation")
@@ -121,7 +121,7 @@ def run_check(config):
     try:
         check_env(env, skip_render_check=True)
         check_sb3(env)
-        if env.surf is not None or env.screen is not None:
+        if env.unwrapped.surf is not None or env.unwrapped.screen is not None:
             raise RuntimeError("Se generó una superficie gráfica durante la comprobación.")
         print("Gymnasium y Stable-Baselines3: OK. Estado numérico sin renderizado RGB.")
         print(
@@ -165,6 +165,9 @@ def run_benchmark(config, args):
 
 
 def run_evaluate(config, args):
+    residual = config.environment.control_profile == RACING_RESIDUAL
+    if "reference" in args.agents and not residual:
+        raise ValueError("El agente reference requiere el perfil de control racing-residual-v1.")
     if args.min_completion is not None and not 0 <= args.min_completion <= 1:
         raise ValueError("La finalización mínima debe pertenecer a [0, 1].")
     learned = set(args.agents) & {"ppo", "bc", "bc-ppo"}
@@ -193,6 +196,8 @@ def run_evaluate(config, args):
     for name in args.agents:
         if name == "random":
             factories[name] = lambda seed: RandomAgent(config.ppo.seed, seed)
+        elif name == "reference":
+            factories[name] = lambda seed: ZeroCorrectionAgent()
         elif name == "pursuit":
             factories[name] = lambda seed: PursuitAgent(
                 args.reference_speed,
@@ -207,6 +212,7 @@ def run_evaluate(config, args):
             **provenance(config, kind="evaluation"),
             "split": args.split,
             "agents": args.agents,
+            "uses_global_reference": residual,
             "reference": {
                 "target_speed": args.reference_speed,
                 "lateral_acceleration": args.reference_lateral_acceleration,

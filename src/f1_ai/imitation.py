@@ -16,9 +16,9 @@ from stable_baselines3 import PPO
 
 from f1_ai.agents import PPOAgent, PursuitAgent
 from f1_ai.artifacts import create_directory, provenance, write_json
-from f1_ai.config import EnvironmentConfig, ExperimentConfig
+from f1_ai.config import RACING_RESIDUAL, EnvironmentConfig, ExperimentConfig
 from f1_ai.environment import make_env, observation_contract
-from f1_ai.evaluation import evaluate_episode, summarize
+from f1_ai.evaluation import driving_score, evaluate_episode, summarize
 from f1_ai.racing_controller import FollowerConfig, RacingController, ReferenceState
 from f1_ai.racing_line import ReferenceConfig, plan_reference
 from f1_ai.supervision import fit_actor as fit_actor
@@ -54,6 +54,8 @@ def collect_dataset(
     reference_settings: ReferenceConfig | None = None,
     follower_settings: FollowerConfig | None = None,
 ) -> tuple[dict[str, np.ndarray], list[dict]]:
+    if config.environment.control_profile == RACING_RESIDUAL:
+        raise ValueError("La recolección de etiquetas de imitación requiere mandos directos.")
     if not 0 <= expert_probability <= 1:
         raise ValueError("La probabilidad de usar al experto debe pertenecer a [0, 1].")
     rng = np.random.default_rng(config.ppo.seed)
@@ -212,7 +214,7 @@ def clone(
             "learning_rate": learning_rate,
             "dagger_rounds": dagger_rounds,
             "only_training_labels": True,
-            "checkpoint_selection": "clean_laps, completed_laps, coverage, lap_time"
+            "checkpoint_selection": "clean_laps, completed_laps, clean_lap_time, coverage"
             if config.environment.reward_profile == "lap-time-v1"
             else "completed_laps, coverage, lap_time",
         }
@@ -258,13 +260,9 @@ def clone(
                 for seed in config.circuits.validation
             ]
             summary = summarize(episodes)
-            score = (
-                summary["completed_laps"],
-                summary["mean_coverage"],
-                -(summary["mean_lap_time_seconds"] or float("inf")),
+            score = driving_score(
+                summary, prioritize_clean_time=config.environment.reward_profile == "lap-time-v1"
             )
-            if config.environment.reward_profile == "lap-time-v1":
-                score = (summary["clean_completed_laps"], *score)
             record = {
                 "round": round_index,
                 "samples": len(data["observations"]),
