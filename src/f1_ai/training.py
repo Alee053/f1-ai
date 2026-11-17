@@ -22,6 +22,7 @@ from f1_ai.artifacts import create_directory, provenance, write_json
 from f1_ai.callbacks import DrivingEvaluation
 from f1_ai.config import EnvironmentConfig, ExperimentConfig, PPOConfig
 from f1_ai.environment import CircuitPool, make_env, observation_contract
+from f1_ai.supervision import ActorRehearsal, RehearsalPPO
 
 
 class _TerminationRequested(KeyboardInterrupt):
@@ -54,9 +55,10 @@ def require_device(device: str) -> str:
     return device
 
 
-def create_model(config: ExperimentConfig, env: Env | VecEnv) -> PPO:
+def create_model(config: ExperimentConfig, env: Env | VecEnv, *, rehearsal: bool = False) -> PPO:
     settings = config.ppo
-    return PPO(
+    algorithm = RehearsalPPO if rehearsal else PPO
+    return algorithm(
         "MlpPolicy",
         env,
         seed=settings.seed,
@@ -106,6 +108,7 @@ def train(
     smoke: bool = False,
     initial_model: Path | None = None,
     resume_model: Path | None = None,
+    rehearsal_dataset: Path | None = None,
 ) -> dict:
     if initial_model is not None and resume_model is not None:
         raise ValueError("Elija inicialización de pesos o reanudación, no ambas.")
@@ -113,6 +116,10 @@ def train(
         if smoke:
             raise ValueError("La prueba smoke no permite reanudar un entrenamiento.")
         source_metadata = read_model_metadata(resume_model)
+        if bool(source_metadata.get("rehearsal")) != (rehearsal_dataset is not None):
+            raise ValueError(
+                "Reanudar conserva la variante de PPO y requiere su dataset de repaso."
+            )
         if source_metadata["kind"] != "ppo":
             raise ValueError("La reanudación requiere un checkpoint de entrenamiento PPO.")
         recorded = asdict(PPOConfig(**source_metadata["configuration"]["ppo"]))
@@ -180,7 +187,7 @@ def train(
                 "random_generator_state_restored": False,
             }
         else:
-            model = create_model(config, envs)
+            model = create_model(config, envs, rehearsal=rehearsal_dataset is not None)
         if initial_model is not None:
             source = load_model(initial_model, config, device=settings.device)
             if type(source.policy.action_dist) is not type(model.policy.action_dist):
@@ -191,6 +198,30 @@ def train(
             with torch.no_grad():
                 model.policy.log_std.fill_(settings.log_std_init)
             del source
+        if rehearsal_dataset is not None:
+            from f1_ai.imitation import load_dataset
+
+            data = load_dataset(rehearsal_dataset, config)
+            digest = hashlib.sha256((rehearsal_dataset / "dataset.npz").read_bytes()).hexdigest()
+            if (
+                resume_model is not None
+                and digest != source_metadata["rehearsal"]["dataset_sha256"]
+            ):
+                raise ValueError("El dataset de repaso no coincide con el del checkpoint.")
+            model.actor_rehearsal = ActorRehearsal(model, data, seed=settings.seed)
+            metadata["training_variant"] = "ppo_rehearsal"
+            metadata["rehearsal"] = {
+                "dataset": str(rehearsal_dataset),
+                "dataset_sha256": digest,
+                "samples": len(data["observations"]),
+                "batch_size": 256,
+                "updates_per_rollout": 4,
+                "learning_rate": 1e-4,
+                "critic_updated": False,
+                "log_std_updated": False,
+                "optimizer_restored": False,
+                "sampling_rng_restored": False,
+            }
         metadata["execution"] = {
             "requested_device": settings.device,
             "vector_environment": type(envs).__name__,
@@ -303,4 +334,5 @@ def load_model(
         raise ValueError("Los metadatos no corresponden a un entrenamiento de este proyecto.")
     torch.set_num_threads(config.ppo.torch_threads)
     requested_device = config.ppo.device if device is None else device
-    return PPO.load(path, device=require_device(requested_device), env=env)
+    algorithm = RehearsalPPO if metadata.get("training_variant") == "ppo_rehearsal" else PPO
+    return algorithm.load(path, device=require_device(requested_device), env=env)

@@ -46,6 +46,9 @@ def parser() -> argparse.ArgumentParser:
     training.add_argument("--output", type=Path, required=True)
     training.add_argument("--seed", type=int)
     training.add_argument("--timesteps", type=int)
+    training.add_argument(
+        "--rehearsal-dataset", type=Path, help="Alternar PPO con repaso BC de un dataset train"
+    )
     initialization = training.add_mutually_exclusive_group()
     initialization.add_argument(
         "--initial-model", type=Path, help="Inicializar pesos desde un modelo compatible"
@@ -307,6 +310,7 @@ def main():
                             smoke=args.smoke,
                             initial_model=args.initial_model,
                             resume_model=args.resume_model,
+                            rehearsal_dataset=args.rehearsal_dataset,
                         ),
                         indent=2,
                     )

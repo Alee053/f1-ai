@@ -13,7 +13,6 @@ import numpy as np
 import torch
 from gymnasium.envs.box2d.car_racing import TRACK_WIDTH
 from stable_baselines3 import PPO
-from torch.nn import functional as F
 
 from f1_ai.agents import PPOAgent, PursuitAgent
 from f1_ai.artifacts import create_directory, provenance, write_json
@@ -22,6 +21,7 @@ from f1_ai.environment import make_env, observation_contract
 from f1_ai.evaluation import evaluate_episode, summarize
 from f1_ai.racing_controller import FollowerConfig, RacingController, ReferenceState
 from f1_ai.racing_line import ReferenceConfig, plan_reference
+from f1_ai.supervision import fit_actor as fit_actor
 from f1_ai.training import create_model
 
 
@@ -185,46 +185,6 @@ def record_demonstrations(
     }
     write_json(output / "results.json", result)
     return result
-
-
-def fit_actor(
-    model: PPO,
-    data: dict[str, np.ndarray],
-    *,
-    epochs: int,
-    learning_rate: float,
-    seed: int,
-    batch_size: int = 256,
-) -> list[float]:
-    if epochs < 1 or batch_size < 1 or not 0 < learning_rate < 1:
-        raise ValueError("La configuración de ajuste supervisado no es válida.")
-    observations = torch.as_tensor(data["observations"], dtype=torch.float32, device=model.device)
-    actions = torch.as_tensor(data["actions"], dtype=torch.float32, device=model.device)
-    parameters = [
-        *model.policy.mlp_extractor.policy_net.parameters(),
-        *model.policy.action_net.parameters(),
-    ]
-    optimizer = torch.optim.Adam(parameters, lr=learning_rate)
-    generator = torch.Generator().manual_seed(seed)
-    losses = []
-    model.policy.set_training_mode(True)
-    for epoch in range(epochs):
-        order = torch.randperm(len(observations), generator=generator).to(model.device)
-        total = 0.0
-        for indices in order.split(batch_size):
-            mean = model.policy.get_distribution(observations[indices]).distribution.mean
-            if model.policy.squash_output:
-                mean = torch.tanh(mean)
-            loss = F.mse_loss(mean, actions[indices])
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(parameters, 0.5)
-            optimizer.step()
-            total += float(loss.detach()) * len(indices)
-        losses.append(total / len(observations))
-        if (epoch + 1) % 10 == 0 or epoch == epochs - 1:
-            print(f"[imitation] epoch={epoch + 1} mse={losses[-1]:.6f}", flush=True)
-    return losses
 
 
 def clone(

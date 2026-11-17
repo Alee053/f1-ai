@@ -511,3 +511,27 @@ CPU. El preset usa dos capas de 256 unidades y solicita un millón de interaccio
 PPO, con tres épocas por actualización, tasa 3e-6 y KL objetivo 0.003. Estos
 parámetros prueban un ajuste conservador; no garantizan evitar regresiones ni
 encontrar la trazada óptima. Cada etapa conserva sus checkpoints y metadatos.
+
+`train --rehearsal-dataset RUTA` activa una variante que alterna una actualización
+PPO estándar con cuatro minibatches supervisados del actor. Utiliza un Adam
+separado a 1e-4 y lotes de 256 demostraciones. El crítico y la exploración solo
+reciben actualizaciones PPO. El repaso intenta reducir la pérdida de imitación
+durante el ajuste; no impone una cota respecto al profesor ni garantiza estabilidad.
+Es una alternancia PPO/BC, no una pérdida conjunta modificada de PPO.
+
+El dataset de repaso debe corresponder al entorno y contener únicamente etiquetas
+de entrenamiento. Se registran ruta, SHA y parámetros. El corpus y su optimizador
+supervisado se excluyen del checkpoint. Para reanudar esta variante se debe indicar
+el mismo dataset: se restaura el optimizador PPO y se reinician el Adam supervisado
+y su muestreador. La predicción de un modelo guardado utiliza solamente la red.
+
+El preset `formula-racing-rehearsal-cuda.toml` reduce `log_std_init` a -5 y eleva
+`gamma` a 0.999. Se prueba junto al repaso; el experimento cambia varios factores
+y no permite atribuir un resultado a uno solo. Ejemplo de inicio:
+
+```bash
+uv run f1-ai --config configs/formula-racing-rehearsal-cuda.toml train \
+  --initial-model runs/racing-dagger/best_model.zip \
+  --rehearsal-dataset runs/racing-dagger-dataset \
+  --output runs/racing-ppo-rehearsal
+```
