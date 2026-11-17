@@ -1,5 +1,6 @@
 """CarRacing numérico con física clásica o modelo Formula versionado."""
 
+import math
 from typing import Any
 
 import gymnasium as gym
@@ -9,6 +10,7 @@ from gymnasium.envs.box2d.car_racing import FPS, PLAYFIELD, TRACK_WIDTH, CarRaci
 
 from f1_ai.config import EnvironmentConfig
 from f1_ai.geometry import CircuitGeometry, LapProgress
+from f1_ai.rewards import lap_time_step_reward
 
 OBSERVATION_VERSION = 1
 LOOKAHEAD_METERS = np.array([8.0, 16.0, 32.0, 48.0])
@@ -31,6 +33,25 @@ OBSERVATION_NAMES = (
     "waypoint_48_right",
     "waypoint_48_forward",
 )
+RACING_LOOKAHEAD_METERS = np.array([6.0, 12.0, 24.0, 40.0, 60.0, 90.0, 130.0, 180.0])
+RACING_OBSERVATION_NAMES = (
+    *OBSERVATION_NAMES[:8],
+    *(
+        f"waypoint_{int(distance)}_{axis}"
+        for distance in RACING_LOOKAHEAD_METERS
+        for axis in ("right", "forward")
+    ),
+    *(f"wheel_slip_{wheel}" for wheel in ("fl", "fr", "rl", "rr")),
+    *(f"wheel_lock_{wheel}" for wheel in ("fl", "fr", "rl", "rr")),
+    "previous_steering",
+    "previous_pedal",
+)
+
+
+def observation_contract(config: EnvironmentConfig) -> tuple[int, tuple[str, ...]]:
+    if config.observation_profile == "racing-v2":
+        return 2, RACING_OBSERVATION_NAMES
+    return OBSERVATION_VERSION, OBSERVATION_NAMES
 
 
 class NumericCarRacing(CarRacing):
@@ -51,7 +72,9 @@ class NumericCarRacing(CarRacing):
             lap_complete_percent=config.minimum_coverage,
         )
         self.config = config
-        self.observation_space = spaces.Box(-1.0, 1.0, shape=(16,), dtype=np.float32)
+        self.observation_space = spaces.Box(
+            -1.0, 1.0, shape=(len(observation_contract(config)[1]),), dtype=np.float32
+        )
         self.action_space = spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32)
         self.geometry: CircuitGeometry | None = None
         self.progress: LapProgress | None = None
@@ -60,6 +83,7 @@ class NumericCarRacing(CarRacing):
         self.off_track_events = 0
         self._consecutive_off_track = 0
         self._episode_done = False
+        self.previous_action = np.zeros(2, dtype=np.float32)
 
     def _render(self, mode: str):
         # CarRacing.step llama este modo incluso si render_mode es None.
@@ -77,8 +101,18 @@ class NumericCarRacing(CarRacing):
         forward = np.array(hull.GetWorldVector((0, 1)))
         right = np.array(hull.GetWorldVector((1, 0)))
         velocity = np.array(hull.linearVelocity)
-        future = self.geometry.sample(projection.distance + LOOKAHEAD_METERS) - position
-        waypoints = np.column_stack((future @ right, future @ forward)) / WAYPOINT_SCALE
+        racing = self.config.observation_profile == "racing-v2"
+        lookahead = RACING_LOOKAHEAD_METERS if racing else LOOKAHEAD_METERS
+        future = self.geometry.sample(projection.distance + lookahead) - position
+        scale = lookahead[:, None] if racing else WAYPOINT_SCALE
+        waypoints = np.column_stack((future @ right, future @ forward)) / scale
+        extra = []
+        if racing:
+            extra = [
+                *(np.array(self.car.telemetry["slip_ratios"]) / 2.0),
+                *self.car.telemetry["locked_wheels"],
+                *self.previous_action,
+            ]
         state = np.array(
             [
                 np.dot(velocity, forward) / self.config.forward_speed_scale,
@@ -90,6 +124,7 @@ class NumericCarRacing(CarRacing):
                 self.road_contact_fraction,
                 self.car.wheels[0].joint.angle / 0.4,
                 *waypoints.ravel(),
+                *extra,
             ],
             dtype=np.float32,
         )
@@ -110,6 +145,7 @@ class NumericCarRacing(CarRacing):
         self.off_track_events = 0
         self._consecutive_off_track = 0
         self._episode_done = False
+        self.previous_action = np.zeros(2, dtype=np.float32)
         observation, _ = super().reset(seed=seed, options=options)
         assert self.geometry is not None and self.car is not None
         start = self.geometry.project(np.array(self.car.hull.position)).distance
@@ -133,6 +169,8 @@ class NumericCarRacing(CarRacing):
         action = np.asarray(action, dtype=np.float32)
         if not self.action_space.contains(action):
             raise ValueError("La acción debe contener dos números finitos en [-1, 1].")
+        action_delta = action - self.previous_action
+        self.previous_action = action.copy()
         steering, acceleration = action
         native_action = np.array(
             [
@@ -164,7 +202,7 @@ class NumericCarRacing(CarRacing):
             reason = "out_of_bounds"
         elif off_track_failure:
             reason = "off_track"
-        elif completed:
+        elif completed and (not off_track or self.config.reward_profile != "lap-time-v1"):
             reason = "lap_complete"
         elif self.elapsed_steps >= self.config.max_steps:
             reason = "time_limit"
@@ -183,6 +221,19 @@ class NumericCarRacing(CarRacing):
                 forward = np.array(self.car.hull.GetWorldVector((0, 1)))
                 aligned = max(0.0, float(np.dot(projection.tangent, forward)))
                 reward = 1000.0 * gain / self.geometry.length * centered * aligned - 0.1
+        elif self.config.reward_profile == "lap-time-v1":
+            hull = self.car.hull
+            velocity = np.array(hull.linearVelocity)
+            forward = np.array(hull.GetWorldVector((0, 1)))
+            right = np.array(hull.GetWorldVector((1, 0)))
+            beta = math.atan2(float(velocity @ right), max(abs(float(velocity @ forward)), 3.0))
+            reward = lap_time_step_reward(
+                gain / self.geometry.length,
+                on_road=not off_track,
+                action_delta=action_delta,
+                max_abs_slip=max(abs(value) for value in self.car.telemetry["slip_ratios"]),
+                sideslip_rad=beta,
+            )
         reward += 100.0 * (reason == "lap_complete")
         reward -= 50.0 * (reason == "off_track") + 100.0 * outside
         return observation, float(reward), terminated, truncated, self._info(reason, native_reward)

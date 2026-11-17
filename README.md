@@ -476,3 +476,38 @@ Los fallos no reciben un tiempo de vuelta. No se entrenan redes ni se modifica
 la recompensa existente. El modelo del plan omite transferencia longitudinal y
 rotación de ruedas; sus límites de velocidad se deben contrastar y ajustar con
 los ensayos físicos antes de usarlo como profesor de BC o DAgger.
+
+### Aprendizaje de la referencia global
+
+`configs/formula-racing-cuda.toml` define una generación independiente. Su perfil
+`racing-v2` contiene 34 entradas: el estado base, ocho puntos de pista entre 6 y
+180 m normalizados por su distancia, slip y bloqueo de las cuatro ruedas, y los
+dos mandos aplicados en el paso anterior. El alumno observa la carretera, sin
+recibir la trazada planificada ni el perfil de velocidad del profesor. Por ello
+el experto sigue disponiendo de información privilegiada. Los modelos anteriores
+conservan el contrato de 16 entradas y se rechaza cargarlos como esta generación.
+
+La recompensa `lap-time-v1` asigna una cantidad fija por avance válido y un coste
+por paso. No pondera el avance por centrado o alineación con el eje. Añade costes
+menores por cambios bruscos de mando, slip longitudinal por encima de 0.2 y deriva
+de carrocería por encima de 0.15 rad. Son umbrales iniciales del experimento, no
+límites identificados de un F1 real. No se considera éxito cruzar la meta fuera
+de carretera. La selección de modelos prioriza las vueltas completas sin salidas.
+
+```bash
+uv run f1-ai --config configs/formula-racing-cuda.toml demonstrations \
+  --teacher racing --output runs/racing-demos
+uv run f1-ai --config configs/formula-racing-cuda.toml clone \
+  --dataset runs/racing-demos --epochs 60 --dagger-rounds 2 \
+  --output runs/racing-dagger
+uv run f1-ai --config configs/formula-racing-cuda.toml train \
+  --initial-model runs/racing-dagger/best_model.zip --output runs/racing-ppo
+```
+
+DAgger vuelve a planificar cada pista de entrenamiento y etiqueta los estados
+visitados por el alumno. Las rampas del profesor se calculan desde el mando que
+realmente se aplicó. La red se ajusta en CUDA; la recolección y Box2D siguen en
+CPU. El preset usa dos capas de 256 unidades y solicita un millón de interacciones
+PPO, con tres épocas por actualización, tasa 3e-6 y KL objetivo 0.003. Estos
+parámetros prueban un ajuste conservador; no garantizan evitar regresiones ni
+encontrar la trazada óptima. Cada etapa conserva sus checkpoints y metadatos.

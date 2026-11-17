@@ -18,6 +18,7 @@ class EnvironmentConfig:
     vehicle_model: str = "classic"
     formula: FormulaConfig | None = None
     forward_speed_scale: float = 60.0
+    observation_profile: str = "legacy"
 
     def __post_init__(self):
         if self.vehicle_model not in {"classic", "formula-v1"}:
@@ -47,8 +48,14 @@ class EnvironmentConfig:
             raise ValueError("La cobertura mínima debe pertenecer a (0, 1].")
         if not 0 < self.steering_scale <= 1:
             raise ValueError("La escala de dirección debe pertenecer a (0, 1].")
-        if self.reward_profile not in {"progress", "track"}:
-            raise ValueError("El perfil de recompensa debe ser progress o track.")
+        if self.observation_profile not in {"legacy", "racing-v2"}:
+            raise ValueError("observation_profile debe ser legacy o racing-v2.")
+        if self.reward_profile not in {"progress", "track", "lap-time-v1"}:
+            raise ValueError("El perfil de recompensa debe ser progress, track o lap-time-v1.")
+        if self.vehicle_model != "formula-v1" and (
+            self.observation_profile == "racing-v2" or self.reward_profile == "lap-time-v1"
+        ):
+            raise ValueError("Los perfiles racing-v2 y lap-time-v1 requieren Formula.")
 
 
 @dataclass(frozen=True)

@@ -33,6 +33,19 @@ def test_lap_time_averages_only_successes():
     assert summary["completion_rate"] == pytest.approx(0.5)
 
 
+def test_clean_laps_exclude_successes_with_off_track_steps():
+    common = {"return": 1, "coverage": 1.0, "lap_time_seconds": 40}
+    summary = summarize(
+        [
+            {**common, "lap_complete": True, "off_track_fraction": 0},
+            {**common, "lap_complete": True, "off_track_fraction": 0.01},
+            {**common, "lap_complete": False, "off_track_fraction": 0},
+        ]
+    )
+    assert summary["completed_laps"] == 2
+    assert summary["clean_completed_laps"] == 1
+
+
 def test_reference_controller_completes_a_forward_lap():
     result = evaluate_episode(EnvironmentConfig(), PursuitAgent(), 0, agent_name="pursuit")
     assert result["lap_complete"]

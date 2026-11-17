@@ -132,14 +132,7 @@ def run_reference(
             terminated = truncated = False
             while not (terminated or truncated):
                 car = env.car
-                state = ReferenceState(
-                    position=tuple(car.hull.position),
-                    heading_rad=float(car.hull.angle),
-                    velocity=tuple(car.hull.linearVelocity),
-                    yaw_rate_rad_s=float(car.hull.angularVelocity),
-                    slip_ratios=car.telemetry["slip_ratios"],
-                    locked_wheels=car.telemetry["locked_wheels"],
-                )
+                state = ReferenceState.from_car(car)
                 action = controller.action(state, 1 / FPS)
                 _, reward, terminated, truncated, info = env.step(action)
                 reward_sum += reward

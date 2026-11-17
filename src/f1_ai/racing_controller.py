@@ -19,6 +19,17 @@ class ReferenceState:
     slip_ratios: tuple[float, float, float, float]
     locked_wheels: tuple[bool, bool, bool, bool]
 
+    @classmethod
+    def from_car(cls, car):
+        return cls(
+            position=tuple(car.hull.position),
+            heading_rad=float(car.hull.angle),
+            velocity=tuple(car.hull.linearVelocity),
+            yaw_rate_rad_s=float(car.hull.angularVelocity),
+            slip_ratios=car.telemetry["slip_ratios"],
+            locked_wheels=car.telemetry["locked_wheels"],
+        )
+
     def __post_init__(self):
         for name, size in (("position", 2), ("velocity", 2), ("slip_ratios", 4)):
             values = np.asarray(getattr(self, name))
@@ -86,7 +97,9 @@ class RacingController:
     def reset(self):
         self._last_action = np.zeros(2, dtype=np.float64)
 
-    def action(self, state: ReferenceState, dt: float = 0.02) -> np.ndarray:
+    def action(
+        self, state: ReferenceState, dt: float = 0.02, *, previous_action: np.ndarray | None = None
+    ) -> np.ndarray:
         if (
             isinstance(dt, bool)
             or not isinstance(dt, (int, float))
@@ -94,6 +107,16 @@ class RacingController:
             or not 0 < dt <= 0.2
         ):
             raise ValueError("dt debe pertenecer a (0, 0.2] segundos.")
+        if previous_action is not None:
+            previous_action = np.asarray(previous_action, dtype=np.float64)
+            if (
+                previous_action.shape != (2,)
+                or not np.isfinite(previous_action).all()
+                or np.any(np.abs(previous_action) > 1)
+            ):
+                raise ValueError("previous_action debe contener dos valores finitos en [-1, 1].")
+            # DAgger debe limitar cambios respecto al mando aplicado por el alumno.
+            self._last_action = previous_action.copy()
         vehicle = self.plan.vehicle
         forward = np.array([-math.sin(state.heading_rad), math.cos(state.heading_rad)])
         right = np.array([forward[1], -forward[0]])

@@ -5,7 +5,7 @@ from typing import Protocol
 import numpy as np
 
 from f1_ai.config import EnvironmentConfig
-from f1_ai.environment import WAYPOINT_SCALE
+from f1_ai.environment import OBSERVATION_NAMES, RACING_OBSERVATION_NAMES, WAYPOINT_SCALE
 from f1_ai.vehicle import GRAVITY, aerodynamic_forces
 
 
@@ -37,6 +37,10 @@ class PursuitAgent:
         *,
         environment: EnvironmentConfig | None = None,
     ):
+        if environment is not None and environment.observation_profile != "legacy":
+            raise ValueError(
+                "PursuitAgent usa observaciones legacy; racing-v2 requiere otro experto."
+            )
         if not np.isfinite([target_speed, lateral_acceleration]).all() or (
             target_speed <= 0 or lateral_acceleration <= 0
         ):
@@ -89,7 +93,8 @@ class PursuitAgent:
 
 class PPOAgent:
     def __init__(self, model):
-        if model.observation_space.shape != (16,) or model.action_space.shape != (2,):
+        valid_shapes = {(len(OBSERVATION_NAMES),), (len(RACING_OBSERVATION_NAMES),)}
+        if model.observation_space.shape not in valid_shapes or model.action_space.shape != (2,):
             raise ValueError("El modelo no usa los espacios de observación y acción del proyecto.")
         self.model = model
 

@@ -38,6 +38,8 @@ class DrivingEvaluation(BaseCallback):
             -(summary["mean_lap_time_seconds"] or float("inf")),
             summary["mean_return"],
         )
+        if self.config.environment.reward_profile == "lap-time-v1":
+            score = (summary["clean_completed_laps"], *score)
         record = {"timesteps": self.num_timesteps, "summary": summary, "episodes": episodes}
         self.history.append(record)
         np.savez_compressed(

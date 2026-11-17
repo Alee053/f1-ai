@@ -11,22 +11,26 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from gymnasium.envs.box2d.car_racing import TRACK_WIDTH
 from stable_baselines3 import PPO
 from torch.nn import functional as F
 
 from f1_ai.agents import PPOAgent, PursuitAgent
 from f1_ai.artifacts import create_directory, provenance, write_json
 from f1_ai.config import EnvironmentConfig, ExperimentConfig
-from f1_ai.environment import make_env
+from f1_ai.environment import make_env, observation_contract
 from f1_ai.evaluation import evaluate_episode, summarize
+from f1_ai.racing_controller import FollowerConfig, RacingController, ReferenceState
+from f1_ai.racing_line import ReferenceConfig, plan_reference
 from f1_ai.training import create_model
 
 
 def validate_dataset(data: dict[str, np.ndarray], config: ExperimentConfig) -> None:
     observations, actions, seeds = data["observations"], data["actions"], data["seeds"]
     n = len(observations)
-    if n == 0 or observations.shape != (n, 16) or actions.shape != (n, 2):
-        raise ValueError("El dataset debe contener observaciones [n,16] y acciones [n,2].")
+    width = len(observation_contract(config.environment)[1])
+    if n == 0 or observations.shape != (n, width) or actions.shape != (n, 2):
+        raise ValueError(f"El dataset debe contener observaciones [n,{width}] y acciones [n,2].")
     if (
         seeds.shape != (n,)
         or not np.issubdtype(seeds.dtype, np.integer)
@@ -46,11 +50,24 @@ def collect_dataset(
     expert_probability: float = 1.0,
     target_speed: float = 30.0,
     lateral_acceleration: float = 8.0,
+    teacher_kind: str = "pursuit",
+    reference_settings: ReferenceConfig | None = None,
+    follower_settings: FollowerConfig | None = None,
 ) -> tuple[dict[str, np.ndarray], list[dict]]:
     if not 0 <= expert_probability <= 1:
         raise ValueError("La probabilidad de usar al experto debe pertenecer a [0, 1].")
     rng = np.random.default_rng(config.ppo.seed)
-    teacher = PursuitAgent(target_speed, lateral_acceleration, environment=config.environment)
+    if teacher_kind not in {"pursuit", "racing"}:
+        raise ValueError("El experto debe ser pursuit o racing.")
+    if teacher_kind == "racing" and config.environment.vehicle_model != "formula-v1":
+        raise ValueError("El experto racing requiere Formula.")
+    reference_settings = reference_settings or ReferenceConfig()
+    follower_settings = follower_settings or FollowerConfig()
+    teacher = (
+        PursuitAgent(target_speed, lateral_acceleration, environment=config.environment)
+        if teacher_kind == "pursuit"
+        else None
+    )
     student = PPOAgent(model) if model is not None else None
     env = make_env(config.environment)
     observations, actions, seeds = [], [], []
@@ -58,9 +75,25 @@ def collect_dataset(
     try:
         for seed in config.circuits.train:
             observation, _ = env.reset(seed=seed)
+            if teacher_kind == "racing":
+                teacher = RacingController(
+                    plan_reference(
+                        env.geometry.points,
+                        TRACK_WIDTH,
+                        config.environment.formula,
+                        reference_settings,
+                    ),
+                    follower_settings,
+                )
             terminated = truncated = False
+            max_slip, lock_steps = 0.0, 0
             while not (terminated or truncated):
-                expert_action = teacher.action(observation)
+                if teacher_kind == "racing":
+                    expert_action = teacher.action(
+                        ReferenceState.from_car(env.car), previous_action=env.previous_action
+                    )
+                else:
+                    expert_action = teacher.action(observation)
                 observations.append(observation.copy())
                 actions.append(expert_action)
                 seeds.append(seed)
@@ -68,6 +101,9 @@ def collect_dataset(
                 if student is not None and rng.random() >= expert_probability:
                     action = student.action(observation)
                 observation, _, terminated, truncated, info = env.step(action)
+                if config.environment.vehicle_model == "formula-v1":
+                    max_slip = max(max_slip, max(abs(value) for value in info["slip_ratios"]))
+                    lock_steps += int(any(info["locked_wheels"]))
             episodes.append(
                 {
                     "seed": seed,
@@ -75,7 +111,16 @@ def collect_dataset(
                     "coverage": info["coverage"],
                     "lap_complete": info["lap_complete"],
                     "reason": info["termination_reason"],
+                    "off_track_steps": info["off_track_steps"],
+                    "max_abs_slip_ratio": max_slip,
+                    "wheel_lock_steps": lock_steps,
                 }
+            )
+            print(
+                f"[demonstrations] teacher={teacher_kind} seed={seed} "
+                f"lap={info['lap_complete']} coverage={info['coverage']:.3f} "
+                f"off_track={info['off_track_steps']}",
+                flush=True,
             )
     finally:
         env.close()
@@ -92,6 +137,8 @@ def load_dataset(directory: Path, config: ExperimentConfig) -> dict[str, np.ndar
     with (directory / "metadata.json").open() as stream:
         metadata = json.load(stream)
     recorded = EnvironmentConfig(**metadata["configuration"]["environment"])
+    if metadata["observation_version"] != observation_contract(config.environment)[0]:
+        raise ValueError("La versión de observaciones del dataset no coincide.")
     if recorded != config.environment:
         raise ValueError("El entorno de las demostraciones no coincide con la configuración.")
     with np.load(directory / "dataset.npz", allow_pickle=False) as archive:
@@ -106,6 +153,7 @@ def record_demonstrations(
     *,
     target_speed: float = 30.0,
     lateral_acceleration: float = 8.0,
+    teacher_kind: str = "pursuit",
 ) -> dict:
     output = create_directory(output)
     started = time.perf_counter()
@@ -113,12 +161,20 @@ def record_demonstrations(
         config,
         target_speed=target_speed,
         lateral_acceleration=lateral_acceleration,
+        teacher_kind=teacher_kind,
     )
     metadata = provenance(config, kind="demonstrations")
     metadata["teacher"] = {
         "target_speed": target_speed,
         "lateral_acceleration": lateral_acceleration,
+        "teacher_kind": teacher_kind,
     }
+    if teacher_kind == "racing":
+        metadata["teacher"].update(
+            reference_settings=asdict(ReferenceConfig()),
+            follower_settings=asdict(FollowerConfig()),
+        )
+        metadata["teacher_information_regime"] = "full_map_and_physical_state"
     write_json(output / "metadata.json", metadata)
     np.savez_compressed(output / "dataset.npz", **data)
     result = {
@@ -196,10 +252,25 @@ def clone(
             "learning_rate": learning_rate,
             "dagger_rounds": dagger_rounds,
             "only_training_labels": True,
+            "checkpoint_selection": "clean_laps, completed_laps, coverage, lap_time"
+            if config.environment.reward_profile == "lap-time-v1"
+            else "completed_laps, coverage, lap_time",
+        }
+        metadata["execution"] = {
+            "model_device": str(model.device),
+            "policy_devices": sorted(
+                {str(parameter.device) for parameter in model.policy.parameters()}
+            ),
+            "cuda_device_name": torch.cuda.get_device_name(model.device)
+            if model.device.type == "cuda"
+            else None,
         }
         write_json(output / "metadata.json", metadata)
         with (dataset / "metadata.json").open() as stream:
             teacher = json.load(stream)["teacher"]
+        if teacher.get("teacher_kind") == "racing":
+            teacher["reference_settings"] = ReferenceConfig(**teacher["reference_settings"])
+            teacher["follower_settings"] = FollowerConfig(**teacher["follower_settings"])
         history = []
         best_score = None
         for round_index in range(dagger_rounds + 1):
@@ -230,6 +301,8 @@ def clone(
                 summary["mean_coverage"],
                 -(summary["mean_lap_time_seconds"] or float("inf")),
             )
+            if config.environment.reward_profile == "lap-time-v1":
+                score = (summary["clean_completed_laps"], *score)
             record = {
                 "round": round_index,
                 "samples": len(data["observations"]),

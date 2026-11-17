@@ -67,6 +67,7 @@ def parser() -> argparse.ArgumentParser:
     demonstrations.add_argument("--output", type=Path, required=True)
     demonstrations.add_argument("--target-speed", type=float, default=30.0)
     demonstrations.add_argument("--lateral-acceleration", type=float, default=8.0)
+    demonstrations.add_argument("--teacher", choices=["pursuit", "racing"], default="pursuit")
     imitation = commands.add_parser("clone", help="Aprender el actor por imitación, antes de PPO")
     imitation.add_argument("--dataset", type=Path, required=True)
     imitation.add_argument("--output", type=Path, required=True)
@@ -327,6 +328,7 @@ def main():
                     args.output,
                     target_speed=args.target_speed,
                     lateral_acceleration=args.lateral_acceleration,
+                    teacher_kind=args.teacher,
                 )
                 print(json.dumps(result, indent=2))
             case "clone":

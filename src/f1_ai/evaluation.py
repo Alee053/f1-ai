@@ -111,6 +111,9 @@ def summarize(episodes: Sequence[dict]) -> dict:
     return {
         "episodes": len(episodes),
         "completed_laps": len(times),
+        "clean_completed_laps": sum(
+            episode["lap_complete"] and episode["off_track_fraction"] == 0 for episode in episodes
+        ),
         "completion_rate": len(times) / len(episodes),
         "mean_return": float(returns.mean()),
         "sample_std_return": float(returns.std(ddof=1)) if len(returns) > 1 else None,

@@ -9,7 +9,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 from f1_ai.config import ExperimentConfig
-from f1_ai.environment import OBSERVATION_NAMES, OBSERVATION_VERSION
+from f1_ai.environment import observation_contract
 
 
 def create_directory(path: str | Path) -> Path:
@@ -25,6 +25,7 @@ def write_json(path: Path, data) -> None:
 
 
 def provenance(config: ExperimentConfig, *, kind: str) -> dict:
+    observation_version, observation_names = observation_contract(config.environment)
     revision = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         capture_output=True,
@@ -47,8 +48,8 @@ def provenance(config: ExperimentConfig, *, kind: str) -> dict:
             name: version(name)
             for name in ("gymnasium", "box2d", "stable-baselines3", "torch", "numpy")
         },
-        "observation_version": OBSERVATION_VERSION,
-        "observation_names": OBSERVATION_NAMES,
+        "observation_version": observation_version,
+        "observation_names": observation_names,
         "action_names": ["steering", "signed_acceleration"],
         "configuration": asdict(config),
     }

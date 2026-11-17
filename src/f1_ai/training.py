@@ -21,7 +21,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv
 from f1_ai.artifacts import create_directory, provenance, write_json
 from f1_ai.callbacks import DrivingEvaluation
 from f1_ai.config import EnvironmentConfig, ExperimentConfig, PPOConfig
-from f1_ai.environment import OBSERVATION_VERSION, CircuitPool, make_env
+from f1_ai.environment import CircuitPool, make_env, observation_contract
 
 
 class _TerminationRequested(KeyboardInterrupt):
@@ -156,7 +156,11 @@ def train(
                 source_metadata["kind"],
             ),
         }
-    metadata["checkpoint_selection"] = "completed_laps, coverage, lap_time, return"
+    metadata["checkpoint_selection"] = (
+        "clean_laps, completed_laps, coverage, lap_time, return"
+        if config.environment.reward_profile == "lap-time-v1"
+        else "completed_laps, coverage, lap_time, return"
+    )
     started = time.perf_counter()
     try:
         starting_timesteps = 0
@@ -290,7 +294,7 @@ def load_model(
 ) -> PPO:
     """Carga exclusivamente un checkpoint local de confianza con metadatos compatibles."""
     metadata = read_model_metadata(path)
-    if metadata["observation_version"] != OBSERVATION_VERSION:
+    if metadata["observation_version"] != observation_contract(config.environment)[0]:
         raise ValueError("La versión de observaciones del modelo no coincide.")
     recorded_environment = EnvironmentConfig(**metadata["configuration"]["environment"])
     if asdict(recorded_environment) != asdict(config.environment):
