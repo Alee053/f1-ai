@@ -283,6 +283,8 @@ def clone(
                 )
                 data = {key: np.concatenate((data[key], fresh[key])) for key in data}
                 validate_dataset(data, config)
+            # Permite continuar y auditar DAgger sin perder sus etiquetas agregadas.
+            np.savez_compressed(output / f"dataset-round-{round_index}.npz", **data)
             losses = fit_actor(
                 model,
                 data,
