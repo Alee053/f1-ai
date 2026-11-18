@@ -1,8 +1,25 @@
 """Objetivo de tiempo con costes menores por controles bruscos y slip excesivo."""
 
+import gymnasium as gym
 import numpy as np
 
 LAP_PROGRESS_POINTS = 1000.0
+
+
+class RearSlipPenalty(gym.Wrapper):
+    """Refuerza el coste por patinamiento del eje motriz solo durante PPO."""
+
+    def __init__(self, env: gym.Env, coefficient: float):
+        super().__init__(env)
+        self.coefficient = coefficient
+
+    def step(self, action):
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        if self.env.unwrapped.road_contact_fraction >= 0.5:
+            slip = max(abs(value) for value in info["slip_ratios"][2:])
+            excess = min(2.0, max(0.0, slip - 0.3))
+            reward -= self.coefficient * excess**2
+        return observation, reward, terminated, truncated, info
 
 
 def lap_time_step_reward(

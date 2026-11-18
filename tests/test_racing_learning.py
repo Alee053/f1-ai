@@ -12,7 +12,7 @@ from f1_ai.curriculum import CornerCurriculum, CornerStart
 from f1_ai.environment import CircuitPool, make_env, observation_contract
 from f1_ai.imitation import validate_dataset
 from f1_ai.racing_line import ReferenceConfig
-from f1_ai.rewards import lap_time_step_reward
+from f1_ai.rewards import RearSlipPenalty, lap_time_step_reward
 from f1_ai.training import load_model, train
 
 
@@ -116,6 +116,29 @@ def test_lap_objective_prefers_less_time_for_equal_valid_progress_and_tolerates_
     assert lap_time_step_reward(0.001, **{**steady, "action_delta": np.ones(2)}) < baseline
     assert lap_time_step_reward(0.001, **{**steady, "sideslip_rad": 0.6}) < baseline
     assert lap_time_step_reward(0.1, **{**steady, "on_road": False}) < 0
+
+
+def test_training_penalty_only_charges_excess_slip_of_driven_wheels(monkeypatch):
+    config = load_config("configs/formula-curriculum-cuda.toml")
+    env = make_env(config.environment)
+    wrapper = RearSlipPenalty(env, coefficient=0.6)
+    try:
+        observation, _ = wrapper.reset(seed=7)
+        action = np.array([0.8, 0.3], dtype=np.float32)
+        info = {"slip_ratios": (0.9, -0.95, 0.2, -0.25)}
+
+        def unchanged_controls(command):
+            np.testing.assert_array_equal(command, action)
+            return observation, 1.0, False, False, info
+
+        monkeypatch.setattr(env, "step", unchanged_controls)
+        assert wrapper.step(action)[1] == 1.0
+        info["slip_ratios"] = (0.1, -0.2, 1.0, 0.15)
+        _, reward, terminated, truncated, result = wrapper.step(action)
+        assert reward == pytest.approx(1.0 - 0.6 * 0.7**2)
+        assert result is info and not (terminated or truncated)
+    finally:
+        wrapper.close()
 
 
 def test_racing_dagger_labels_rate_changes_from_the_students_actual_controls(monkeypatch):
