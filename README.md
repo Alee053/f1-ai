@@ -628,10 +628,27 @@ uv run f1-ai --config configs/formula-corridor-cuda.toml train \
   --initial-model runs/ppo-stable/model.zip --output runs/corridor-ppo
 ```
 
+`formula-corridor-recovery-cuda.toml` continúa el entrenamiento del corredor
+desde el checkpoint de 131.072 pasos. En validación ampliada, el checkpoint
+de 65.536 pasos de esta segunda etapa completó 70 de 70 circuitos sin salidas
+ni bloqueos.
+
+```bash
+uv run f1-ai --config configs/formula-corridor-recovery-cuda.toml train \
+  --initial-model runs/corridor-ppo/checkpoints/ppo_131072_steps.zip \
+  --output runs/corridor-recovery
+```
+
+`time_search_passes` en `[environment.racing_reference.plan]` prueba
+desplazamientos suaves de la trazada dentro del corredor. Solo admite
+candidatos dentro de los límites de pista y dirección que mejoran el tiempo
+estimado del perfil de velocidad. El resultado es una referencia para la
+red. El tiempo de vuelta se mide aparte con la física de Box2D.
+
 `time_progress_mix` en `[ppo]` acepta valores entre 0 y 1. El valor 1
 distribuye el premio de avance según el tiempo de referencia por sector. El
-total de avance en una vuelta completa se conserva y la evaluación usa el
-mismo perfil `lap-time-v1`.
+total de avance en una vuelta sin salidas se conserva y la evaluación usa
+el perfil `lap-time-v1`.
 
 El perfil `road-v5` usa 36 mediciones del vehículo y de los bordes. Omite las
 coordenadas de la trazada calculada, su velocidad objetivo y su curvatura.
