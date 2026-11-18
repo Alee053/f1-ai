@@ -32,7 +32,7 @@ from f1_ai.config import (
 )
 from f1_ai.curriculum import CornerCurriculum
 from f1_ai.environment import CircuitPool, make_env, observation_contract
-from f1_ai.rewards import FrontLockPenalty, RearSlipPenalty, TimeProgressReward
+from f1_ai.rewards import FrontLockPenalty, RearSlipPenalty, RoadContactPenalty, TimeProgressReward
 from f1_ai.supervision import ActorRehearsal, RehearsalPPO
 
 
@@ -111,6 +111,8 @@ def make_training_envs(config: ExperimentConfig) -> VecEnv:
             env = RearSlipPenalty(env, settings.rear_slip_penalty)
         if settings.front_lock_penalty:
             env = FrontLockPenalty(env, settings.front_lock_penalty)
+        if settings.road_contact_penalty:
+            env = RoadContactPenalty(env, settings.road_contact_penalty)
         env = CircuitPool(env, config.circuits.train, shuffle=True)
         info_keywords = ()
         if settings.corner_curriculum:

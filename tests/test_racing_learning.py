@@ -16,7 +16,12 @@ from f1_ai.environment import CircuitPool, make_env, observation_contract
 from f1_ai.imitation import validate_dataset
 from f1_ai.plan_features import ReferenceTimeProgress
 from f1_ai.racing_line import ReferenceConfig
-from f1_ai.rewards import FrontLockPenalty, RearSlipPenalty, lap_time_step_reward
+from f1_ai.rewards import (
+    FrontLockPenalty,
+    RearSlipPenalty,
+    RoadContactPenalty,
+    lap_time_step_reward,
+)
 from f1_ai.training import _initialize_policy, create_model, load_model, train
 
 
@@ -281,6 +286,27 @@ def test_reference_time_credit_redistributes_reward_and_wraps_sectors():
     assert profile.adjustment(30, 0, 20, 40) == pytest.approx(
         profile.adjustment(30, 0, 10, 40) + profile.adjustment(30, 10, 20, 40)
     )
+
+
+@pytest.mark.parametrize("contact", [1.0, 0.75, 0.0])
+def test_road_contact_penalty_uses_wheels_on_asphalt(monkeypatch, contact):
+    config = load_config("configs/formula-wide-entry-cuda.toml")
+    env = make_env(config.environment)
+    wrapper = RoadContactPenalty(env, coefficient=0.6)
+    try:
+        observation, info = wrapper.reset(seed=7)
+        action = np.array([0.4, -0.2], dtype=np.float32)
+        monkeypatch.setattr(type(env), "road_contact_fraction", property(lambda _env: contact))
+
+        def unchanged_controls(command):
+            np.testing.assert_array_equal(command, action)
+            return observation, 1.0, False, False, info
+
+        monkeypatch.setattr(env, "step", unchanged_controls)
+        _, reward, *_ = wrapper.step(action)
+        assert reward == pytest.approx(1.0 - 0.6 * (1 - contact))
+    finally:
+        wrapper.close()
 
 
 def test_training_penalty_only_charges_excess_slip_of_driven_wheels(monkeypatch):

@@ -706,6 +706,8 @@ El preset permite entrenar 2.000.896 pasos en lotes de 2.048.
 Con `--rehearsal-dataset` se puede alternar PPO con un repaso de maniobras
 guardadas en circuitos de entrenamiento. El parámetro
 `rehearsal_learning_rate` controla la intensidad de ese repaso.
+El coste opcional `road_contact_penalty` aumenta con la fracción de ruedas
+fuera del asfalto durante PPO.
 
 El ajuste opcional `rear_slip_penalty` en `[ppo]` añade un coste al superar
 0,30 de deslizamiento longitudinal en una rueda trasera sobre el asfalto.

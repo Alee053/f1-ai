@@ -160,6 +160,7 @@ class PPOConfig:
     front_lock_penalty: float = 0.0
     time_progress_mix: float = 0.0
     rehearsal_learning_rate: float = 1e-4
+    road_contact_penalty: float = 0.0
 
     def __post_init__(self):
         if not isinstance(self.device, str) or self.device not in {"cpu", "cuda"}:
@@ -219,6 +220,8 @@ class PPOConfig:
             raise ValueError("time_progress_mix debe pertenecer a [0, 1].")
         if not 0 < self.rehearsal_learning_rate < 1:
             raise ValueError("rehearsal_learning_rate debe pertenecer a (0, 1).")
+        if isinstance(self.road_contact_penalty, bool) or not 0 <= self.road_contact_penalty <= 2:
+            raise ValueError("road_contact_penalty debe pertenecer a [0, 2].")
         if (
             type(self.sde_sample_freq) is not int
             or self.sde_sample_freq < -1
@@ -248,11 +251,15 @@ class ExperimentConfig:
             raise ValueError(
                 "El currículo de curvas requiere Formula con mandos directos y trazada."
             )
-        if (self.ppo.rear_slip_penalty or self.ppo.front_lock_penalty) and (
+        if (
+            self.ppo.rear_slip_penalty
+            or self.ppo.front_lock_penalty
+            or self.ppo.road_contact_penalty
+        ) and (
             self.environment.vehicle_model != "formula-v1"
             or self.environment.control_profile != "direct"
         ):
-            raise ValueError("Los costes de deslizamiento por eje requieren Formula directo.")
+            raise ValueError("Los costes de neumáticos requieren Formula con mandos directos.")
 
 
 def load_config(path: str | Path) -> ExperimentConfig:

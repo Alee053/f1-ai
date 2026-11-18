@@ -9,6 +9,19 @@ from f1_ai.plan_features import ReferenceTimeProgress, track_plan
 LAP_PROGRESS_POINTS = 1000.0
 
 
+class RoadContactPenalty(gym.Wrapper):
+    """Cobra la fracción de ruedas fuera del asfalto, incluso antes de salir por completo."""
+
+    def __init__(self, env: gym.Env, coefficient: float):
+        super().__init__(env)
+        self.coefficient = coefficient
+
+    def step(self, action):
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        reward -= self.coefficient * (1 - self.env.unwrapped.road_contact_fraction)
+        return observation, reward, terminated, truncated, info
+
+
 class TimeProgressReward(gym.Wrapper):
     """Redistribuye el premio de avance hacia sectores lentos durante PPO."""
 
