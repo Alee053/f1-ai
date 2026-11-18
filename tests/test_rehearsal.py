@@ -66,6 +66,7 @@ def test_rehearsal_checkpoint_excludes_data_and_resume_requires_the_same_dataset
             n_epochs=1,
             eval_every=32,
             device=device,
+            rehearsal_learning_rate=6e-6,
         ),
     )
     dataset = tmp_path / "data"
@@ -87,4 +88,5 @@ def test_rehearsal_checkpoint_excludes_data_and_resume_requires_the_same_dataset
     assert metadata["training_variant"] == "ppo_rehearsal"
     assert metadata["resume"]["optimizer_restored"] is True
     assert metadata["rehearsal"]["optimizer_restored"] is False
+    assert metadata["rehearsal"]["learning_rate"] == 6e-6
     assert metadata["rehearsal"]["samples"] == 16

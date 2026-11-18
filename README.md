@@ -703,6 +703,9 @@ con la física calibrada y la búsqueda de trazada por tiempo. Con
 un bono por llegar antes, siempre que el vehículo complete la distancia sin
 salidas ni bloqueos. La validación sigue usando vueltas completas desde la meta.
 El preset permite entrenar 2.000.896 pasos en lotes de 2.048.
+Con `--rehearsal-dataset` se puede alternar PPO con un repaso de maniobras
+guardadas en circuitos de entrenamiento. El parámetro
+`rehearsal_learning_rate` controla la intensidad de ese repaso.
 
 El ajuste opcional `rear_slip_penalty` en `[ppo]` añade un coste al superar
 0,30 de deslizamiento longitudinal en una rueda trasera sobre el asfalto.

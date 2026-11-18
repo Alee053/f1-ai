@@ -159,6 +159,7 @@ class PPOConfig:
     rear_slip_penalty: float = 0.0
     front_lock_penalty: float = 0.0
     time_progress_mix: float = 0.0
+    rehearsal_learning_rate: float = 1e-4
 
     def __post_init__(self):
         if not isinstance(self.device, str) or self.device not in {"cpu", "cuda"}:
@@ -216,6 +217,8 @@ class PPOConfig:
             raise ValueError("front_lock_penalty debe pertenecer a [0, 2].")
         if isinstance(self.time_progress_mix, bool) or not 0 <= self.time_progress_mix <= 1:
             raise ValueError("time_progress_mix debe pertenecer a [0, 1].")
+        if not 0 < self.rehearsal_learning_rate < 1:
+            raise ValueError("rehearsal_learning_rate debe pertenecer a (0, 1).")
         if (
             type(self.sde_sample_freq) is not int
             or self.sde_sample_freq < -1

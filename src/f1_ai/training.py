@@ -302,7 +302,9 @@ def train(
                 and digest != source_metadata["rehearsal"]["dataset_sha256"]
             ):
                 raise ValueError("El dataset de repaso no coincide con el del checkpoint.")
-            model.actor_rehearsal = ActorRehearsal(model, data, seed=settings.seed)
+            model.actor_rehearsal = ActorRehearsal(
+                model, data, seed=settings.seed, learning_rate=settings.rehearsal_learning_rate
+            )
             metadata["training_variant"] = "ppo_rehearsal"
             metadata["rehearsal"] = {
                 "dataset": str(rehearsal_dataset),
@@ -310,7 +312,7 @@ def train(
                 "samples": len(data["observations"]),
                 "batch_size": 256,
                 "updates_per_rollout": 4,
-                "learning_rate": 1e-4,
+                "learning_rate": settings.rehearsal_learning_rate,
                 "critic_updated": False,
                 "log_std_updated": False,
                 "optimizer_restored": False,
