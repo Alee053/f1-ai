@@ -618,6 +618,11 @@ red conserva las entradas de la trazada y el mando directo sobre giro y pedal.
 Se puede iniciar desde `planned-v3`. Las columnas nuevas del actor y del
 crítico empiezan en cero.
 
+En `train --initial-model` se puede cambiar el plan de referencia dentro del
+mismo modelo físico. Los metadatos identifican la transferencia y
+`initialized_model.zip` conserva la política antes de actualizarla. La
+evaluación exige la configuración del checkpoint elegido.
+
 ```bash
 uv run f1-ai --config configs/formula-corridor-cuda.toml train \
   --initial-model runs/ppo-stable/model.zip --output runs/corridor-ppo

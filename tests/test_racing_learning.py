@@ -65,6 +65,29 @@ def test_corridor_preserves_old_inputs_and_transfers_initial_policy(tmp_path):
         before = original.predict(old_obs, deterministic=True)[0]
         after = PPOAgent(expanded).action(new_obs)
         np.testing.assert_allclose(before, after, atol=1e-6)
+        reference = corridor.environment.racing_reference
+        changed = replace(
+            corridor,
+            environment=replace(
+                corridor.environment,
+                racing_reference=replace(
+                    reference, plan=replace(reference.plan, time_search_passes=3)
+                ),
+            ),
+        )
+        assert _initialize_policy(expanded, changed, checkpoint, metadata) == (
+            "zero_initialized_corridor_inputs",
+            "changed_reference_plan",
+        )
+        np.testing.assert_allclose(before, PPOAgent(expanded).action(new_obs), atol=1e-6)
+        incompatible = replace(
+            corridor,
+            environment=replace(
+                corridor.environment, formula=replace(corridor.environment.formula, mass_kg=800)
+            ),
+        )
+        with pytest.raises(ValueError, match="configuración de evaluación"):
+            _initialize_policy(expanded, incompatible, checkpoint, metadata)
     finally:
         old_env.close()
         new_env.close()

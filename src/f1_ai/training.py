@@ -23,6 +23,7 @@ from f1_ai.callbacks import DrivingEvaluation
 from f1_ai.config import (
     CORRIDOR_OBSERVATION,
     LAP_TIME_REWARDS,
+    MAP_OBSERVATIONS,
     PLANNED_OBSERVATION,
     RACING_RESIDUAL,
     EnvironmentConfig,
@@ -136,16 +137,25 @@ def make_training_envs(config: ExperimentConfig) -> VecEnv:
 
 def _initialize_policy(
     model: PPO, config: ExperimentConfig, path: Path, source_metadata: dict
-) -> bool:
+) -> tuple[str, ...]:
+    recorded = EnvironmentConfig(**source_metadata["configuration"]["environment"])
+    environment = config.environment
+    transfers = []
     extend_corridor = (
-        config.environment.observation_profile == CORRIDOR_OBSERVATION
+        environment.observation_profile == CORRIDOR_OBSERVATION
         and source_metadata["observation_version"] == 4
     )
-    source_config = config
     if extend_corridor:
-        source_config = replace(
-            config, environment=replace(config.environment, observation_profile=PLANNED_OBSERVATION)
-        )
+        environment = replace(environment, observation_profile=PLANNED_OBSERVATION)
+        transfers.append("zero_initialized_corridor_inputs")
+    if (
+        environment.observation_profile in MAP_OBSERVATIONS
+        and environment.observation_profile == recorded.observation_profile
+        and environment.racing_reference != recorded.racing_reference
+    ):
+        environment = replace(environment, racing_reference=recorded.racing_reference)
+        transfers.append("changed_reference_plan")
+    source_config = replace(config, environment=environment)
     source = load_model(path, source_config, device=config.ppo.device)
     if type(source.policy.action_dist) is not type(model.policy.action_dist):
         raise ValueError("La distribución de acciones de la inicialización no coincide.")
@@ -160,7 +170,7 @@ def _initialize_policy(
     model.policy.load_state_dict(weights)
     with torch.no_grad():
         model.policy.log_std.fill_(config.ppo.log_std_init)
-    return extend_corridor
+    return tuple(transfers)
 
 
 def train(
@@ -252,9 +262,11 @@ def train(
             }
         else:
             model = create_model(config, envs, rehearsal=rehearsal_dataset is not None)
+        transfers = ()
         if initial_model is not None:
-            if _initialize_policy(model, config, initial_model, source_metadata):
-                metadata["initial_policy"]["transfer"] = "zero_initialized_corridor_inputs"
+            transfers = _initialize_policy(model, config, initial_model, source_metadata)
+            if transfers:
+                metadata["initial_policy"]["transfer"] = transfers
         if rehearsal_dataset is not None:
             from f1_ai.imitation import load_dataset
 
@@ -300,6 +312,8 @@ def train(
             else None,
         }
         write_json(output / "metadata.json", metadata)
+        if transfers:
+            model.save(output / "initialized_model.zip")
         model.set_logger(configure(str(output), ["stdout", "csv"]))
         before = torch.cat(
             [parameter.detach().flatten().clone() for parameter in model.policy.parameters()]
