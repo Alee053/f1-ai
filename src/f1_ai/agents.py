@@ -6,6 +6,7 @@ import numpy as np
 
 from f1_ai.config import EnvironmentConfig
 from f1_ai.environment import (
+    CORRIDOR_OBSERVATION_NAMES,
     OBSERVATION_NAMES,
     PLANNED_OBSERVATION_NAMES,
     RACING_OBSERVATION_NAMES,
@@ -107,9 +108,16 @@ class PPOAgent:
     def __init__(self, model):
         from f1_ai.residual_env import RESIDUAL_OBSERVATION_NAMES
 
-        valid_shapes = {(len(OBSERVATION_NAMES),), (len(RACING_OBSERVATION_NAMES),)}
-        valid_shapes.add((len(RESIDUAL_OBSERVATION_NAMES),))
-        valid_shapes.add((len(PLANNED_OBSERVATION_NAMES),))
+        valid_shapes = {
+            (len(fields),)
+            for fields in (
+                OBSERVATION_NAMES,
+                RACING_OBSERVATION_NAMES,
+                RESIDUAL_OBSERVATION_NAMES,
+                PLANNED_OBSERVATION_NAMES,
+                CORRIDOR_OBSERVATION_NAMES,
+            )
+        }
         if model.observation_space.shape not in valid_shapes or model.action_space.shape != (2,):
             raise ValueError("El modelo no usa los espacios de observación y acción del proyecto.")
         self.model = model

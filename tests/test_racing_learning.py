@@ -7,6 +7,7 @@ import torch
 from gymnasium.utils.env_checker import check_env
 
 from f1_ai import imitation
+from f1_ai.agents import PPOAgent
 from f1_ai.artifacts import provenance, write_json
 from f1_ai.config import load_config
 from f1_ai.curriculum import CornerCurriculum, CornerStart
@@ -60,7 +61,7 @@ def test_corridor_preserves_old_inputs_and_transfers_initial_policy(tmp_path):
         expanded = create_model(corridor, new_env)
         assert _initialize_policy(expanded, corridor, checkpoint, metadata)
         before = original.predict(old_obs, deterministic=True)[0]
-        after = expanded.predict(new_obs, deterministic=True)[0]
+        after = PPOAgent(expanded).action(new_obs)
         np.testing.assert_allclose(before, after, atol=1e-6)
     finally:
         old_env.close()
