@@ -113,6 +113,7 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--output", type=Path, required=True)
         command.add_argument("--samples", type=int, default=128)
         command.add_argument("--iterations", type=int, default=12)
+        command.add_argument("--time-search-passes", type=int, default=0)
         command.add_argument("--max-speed", type=float, default=60, help="Límite en m/s")
         command.add_argument("--grip-fraction", type=float, default=0.75)
         command.add_argument("--braking-fraction", type=float, default=1.0)
@@ -276,6 +277,7 @@ def main():
                 settings = ReferenceConfig(
                     samples=args.samples,
                     optimization_steps=args.iterations,
+                    time_search_passes=args.time_search_passes,
                     speed_limit_m_s=args.max_speed,
                     grip_fraction=args.grip_fraction,
                     braking_fraction=args.braking_fraction,
