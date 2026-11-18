@@ -31,7 +31,7 @@ from f1_ai.plan_features import track_plan
 from f1_ai.racing_controller import FollowerConfig, RacingController, ReferenceState
 from f1_ai.racing_line import ReferenceConfig
 from f1_ai.supervision import fit_actor as fit_actor
-from f1_ai.training import create_model, load_model
+from f1_ai.training import create_model, load_model, read_model_metadata
 
 
 def _teacher_environment(environment: EnvironmentConfig) -> EnvironmentConfig:
@@ -369,3 +369,64 @@ def clone(
         return result
     finally:
         env.close()
+
+
+def calibrate_launch(
+    config: ExperimentConfig, checkpoint: Path, dataset: Path, output: Path
+) -> dict:
+    """Ajusta la última salida de pedal con estados de arranque de train."""
+    source_kind = read_model_metadata(checkpoint)["kind"]
+    if (
+        source_kind not in {"behavior_cloning", "dagger"}
+        or config.environment.observation_profile != ROAD_OBSERVATION
+        or config.environment.control_profile != "direct"
+    ):
+        raise ValueError("El ajuste de arranque requiere un alumno de imitación road-v5.")
+    observations = load_dataset(dataset, config)["observations"]
+    speed_limit = 1.8
+    pedal_floor = 0.08
+    launch_weight = 10.0
+    ridge = 0.00001
+    speed = np.abs(observations[:, 0]) * config.environment.forward_speed_scale
+    launch = speed < speed_limit
+    if not launch.any() or launch.all():
+        raise ValueError("Se requieren estados de arranque y de marcha en el dataset.")
+    model = load_model(checkpoint, config, device="cpu")
+    policy = model.policy
+    with torch.no_grad():
+        tensor = torch.as_tensor(observations, dtype=torch.float32)
+        latent = policy.mlp_extractor.forward_actor(policy.extract_features(tensor))
+        features = np.column_stack((latent.numpy().astype(np.float64), np.ones(len(tensor))))
+        logits = policy.action_net(latent)[:, 1].numpy()
+    minimum = pedal_floor * (1.0 - speed[launch] / speed_limit)
+    if policy.squash_output:
+        minimum = np.arctanh(minimum)
+    desired_delta = np.maximum(minimum - logits[launch], 0.0)
+    stopped, moving = features[launch], features[~launch]
+    gram = moving.T @ moving / len(moving) + launch_weight * stopped.T @ stopped / len(stopped)
+    rhs = launch_weight * stopped.T @ desired_delta / len(stopped)
+    delta = np.linalg.solve(gram + ridge * np.eye(features.shape[1]), rhs)
+    with torch.no_grad():
+        weights = policy.action_net.weight[1]
+        weights.add_(torch.as_tensor(delta[:-1], dtype=weights.dtype))
+        policy.action_net.bias[1].add_(float(delta[-1]))
+
+    results = {
+        "launch_samples": len(stopped),
+        "moving_samples": len(moving),
+        "launch_speed_m_s": speed_limit,
+        "pedal_floor": pedal_floor,
+        "launch_weight": launch_weight,
+        "ridge": ridge,
+        "moving_logit_rmse": float(np.linalg.norm(moving @ delta) / np.sqrt(len(moving))),
+    }
+    metadata = provenance(config, kind=source_kind)
+    metadata["launch_calibration"] = {
+        **results,
+        "source_model_sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+        "dataset_sha256": hashlib.sha256((dataset / "dataset.npz").read_bytes()).hexdigest(),
+    }
+    output = create_directory(output)
+    write_json(output / "metadata.json", metadata)
+    model.save(output / "model.zip")
+    return results

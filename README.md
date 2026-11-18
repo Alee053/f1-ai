@@ -733,6 +733,36 @@ después de la última actualización de PPO. NEAT guarda el resultado de
 cada generación en `generation-*.json` y exporta el campeón seleccionado
 en `best_model.json`. Las semillas 200 a 204 se reservan para la prueba final.
 
+### Arranque y práctica de curvas en road-v5
+
+En una copia de `formula-road-cuda.toml`, `no_progress_steps = 150` termina
+un episodio de entrenamiento si el coche está en el asfalto y lleva tres
+segundos sin sumar cuatro metros válidos de avance. La terminación cuesta
+120 puntos antes de escalar la recompensa. Para facilitar la exploración
+inicial se probaron `rear_slip_penalty = 0.12` y `front_lock_penalty = 0.15`.
+La evaluación de vueltas completas conserva su recompensa original.
+
+`corner_curriculum = true`, `road_start_curriculum = true` y
+`launch_curriculum = true` mezclan salidas desde reposo con trayectos que
+comienzan en movimiento antes de una curva. El entorno calcula la posición
+inicial a partir de la geometría del asfalto. Los sectores pasan de 55 m a
+90 m a los 32.768 pasos y a 120 m a los 81.920. En cada fase sube la
+proporción de vueltas completas. El muestreo de estados iniciales es una
+forma de graduar la dificultad del aprendizaje. [Florensa et al.](https://proceedings.mlr.press/v78/florensa17a.html)
+
+Para un alumno de imitación que frena en la parrilla, se puede ajustar el
+pedal con los estados de arranque del dataset de entrenamiento. El ajuste
+usa observaciones por debajo de 1,8 m/s y regulariza los cambios del pedal
+en marcha. Modifica solo las ponderaciones de la salida del pedal de la
+red y guarda otro checkpoint para iniciar PPO.
+
+```bash
+uv run f1-ai --config "$config" calibrate-launch --model runs/road-clone/best_model.zip \
+  --dataset runs/road-demonstrations --output runs/road-clone-launch
+uv run f1-ai --config "$config" evaluate --agents bc \
+  --model runs/road-clone-launch/model.zip --split validation --output runs/road-launch-validation
+```
+
 ### Currículo de curvas
 
 `formula-curriculum-cuda.toml` parte de un checkpoint de mandos directos y sube

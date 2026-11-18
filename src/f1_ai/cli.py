@@ -100,6 +100,12 @@ def parser() -> argparse.ArgumentParser:
         "--teacher-model", type=Path, help="Checkpoint del maestro PPO para DAgger"
     )
     imitation.add_argument("--seed", type=int)
+    launch = commands.add_parser(
+        "calibrate-launch", help="Ajustar el pedal de salida de un alumno road-v5"
+    )
+    launch.add_argument("--model", type=Path, required=True)
+    launch.add_argument("--dataset", type=Path, required=True)
+    launch.add_argument("--output", type=Path, required=True)
     replay = commands.add_parser("replay", help="Exportar una vuelta de la red neuronal en MP4")
     replay.add_argument("--model", type=Path, required=True)
     replay.add_argument("--output", type=Path, required=True)
@@ -418,6 +424,11 @@ def main():
                     teacher_model=args.teacher_model,
                 )
                 print(json.dumps(result, indent=2))
+            case "calibrate-launch":
+                from f1_ai.imitation import calibrate_launch
+
+                result = calibrate_launch(config, args.model, args.dataset, args.output)
+                print(json.dumps(result, indent=2, allow_nan=False))
             case "replay":
                 from f1_ai.replay import record_replay
 

@@ -8,7 +8,14 @@ from f1_ai.agents import PPOAgent, PursuitAgent
 from f1_ai.artifacts import provenance, write_json
 from f1_ai.config import load_config
 from f1_ai.environment import NumericCarRacing, make_env
-from f1_ai.imitation import clone, fit_actor, load_dataset, record_demonstrations, validate_dataset
+from f1_ai.imitation import (
+    calibrate_launch,
+    clone,
+    fit_actor,
+    load_dataset,
+    record_demonstrations,
+    validate_dataset,
+)
 from f1_ai.training import create_model, load_model
 
 
@@ -88,6 +95,54 @@ def test_road_student_learns_from_a_corridor_checkpoint_without_reading_its_plan
     finally:
         road_env.close()
         teacher_env.close()
+
+
+def test_launch_calibration_only_changes_the_pedal_head(tmp_path):
+    config = load_config("configs/formula-road-cuda.toml")
+    config = replace(
+        config,
+        circuits=replace(config.circuits, train=(0,), validation=(100,)),
+        ppo=replace(config.ppo, device="cpu"),
+    )
+    source, dataset, output = (tmp_path / name for name in ("actor", "data", "calibrated"))
+    source.mkdir()
+    dataset.mkdir()
+    checkpoint = source / "model.zip"
+    env = make_env(config.environment)
+    try:
+        model = create_model(config, env)
+        with torch.no_grad():
+            model.policy.action_net.bias[1].fill_(-0.1)
+        initial, _ = env.reset(seed=0)
+        observation = initial
+        action = np.array([0.0, 0.3], dtype=np.float32)
+        observations = []
+        for _ in range(100):
+            observations.append(observation)
+            observation, _, terminated, truncated, _ = env.step(action)
+            assert not (terminated or truncated)
+        write_json(dataset / "metadata.json", provenance(config, kind="demonstrations"))
+        np.savez_compressed(
+            dataset / "dataset.npz",
+            observations=np.asarray(observations),
+            actions=np.repeat(action[None, :], 100, axis=0),
+            seeds=np.zeros(100, dtype=np.int64),
+        )
+        model.save(checkpoint)
+        write_json(source / "metadata.json", provenance(config, kind="dagger"))
+
+        result = calibrate_launch(config, checkpoint, dataset, output)
+        restored = load_model(output / "model.zip", config)
+        before, after = PPOAgent(model).action(initial), PPOAgent(restored).action(initial)
+        assert 0 < result["launch_samples"] < len(observations)
+        assert after[1] > before[1]
+        for name, weights in model.policy.state_dict().items():
+            calibrated = restored.policy.state_dict()[name]
+            if name.startswith("action_net."):
+                weights, calibrated = weights[:1], calibrated[:1]
+            torch.testing.assert_close(weights, calibrated, rtol=0, atol=0)
+    finally:
+        env.close()
 
 
 @pytest.mark.parametrize("bounded", [False, True])
