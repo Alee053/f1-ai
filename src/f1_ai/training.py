@@ -21,7 +21,9 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv
 from f1_ai.artifacts import create_directory, provenance, write_json
 from f1_ai.callbacks import DrivingEvaluation
 from f1_ai.config import (
+    CORRIDOR_OBSERVATION,
     LAP_TIME_REWARDS,
+    PLANNED_OBSERVATION,
     RACING_RESIDUAL,
     EnvironmentConfig,
     ExperimentConfig,
@@ -125,6 +127,35 @@ def make_training_envs(config: ExperimentConfig) -> VecEnv:
     )
 
 
+def _initialize_policy(
+    model: PPO, config: ExperimentConfig, path: Path, source_metadata: dict
+) -> bool:
+    extend_corridor = (
+        config.environment.observation_profile == CORRIDOR_OBSERVATION
+        and source_metadata["observation_version"] == 4
+    )
+    source_config = config
+    if extend_corridor:
+        source_config = replace(
+            config, environment=replace(config.environment, observation_profile=PLANNED_OBSERVATION)
+        )
+    source = load_model(path, source_config, device=config.ppo.device)
+    if type(source.policy.action_dist) is not type(model.policy.action_dist):
+        raise ValueError("La distribución de acciones de la inicialización no coincide.")
+    if source.policy.squash_output != model.policy.squash_output:
+        raise ValueError("La transformación de acciones de la inicialización no coincide.")
+    weights = source.policy.state_dict()
+    if extend_corridor:
+        added = model.observation_space.shape[0] - source.observation_space.shape[0]
+        for network in ("policy_net", "value_net"):
+            key = f"mlp_extractor.{network}.0.weight"
+            weights[key] = torch.nn.functional.pad(weights[key], (0, added))
+    model.policy.load_state_dict(weights)
+    with torch.no_grad():
+        model.policy.log_std.fill_(config.ppo.log_std_init)
+    return extend_corridor
+
+
 def train(
     config: ExperimentConfig,
     output: Path,
@@ -215,15 +246,8 @@ def train(
         else:
             model = create_model(config, envs, rehearsal=rehearsal_dataset is not None)
         if initial_model is not None:
-            source = load_model(initial_model, config, device=settings.device)
-            if type(source.policy.action_dist) is not type(model.policy.action_dist):
-                raise ValueError("La distribución de acciones de la inicialización no coincide.")
-            if source.policy.squash_output != model.policy.squash_output:
-                raise ValueError("La transformación de acciones de la inicialización no coincide.")
-            model.policy.load_state_dict(source.policy.state_dict())
-            with torch.no_grad():
-                model.policy.log_std.fill_(settings.log_std_init)
-            del source
+            if _initialize_policy(model, config, initial_model, source_metadata):
+                metadata["initial_policy"]["transfer"] = "zero_initialized_corridor_inputs"
         if rehearsal_dataset is not None:
             from f1_ai.imitation import load_dataset
 

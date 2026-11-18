@@ -9,15 +9,17 @@ from gymnasium import spaces
 from gymnasium.envs.box2d.car_racing import FPS, PLAYFIELD, TRACK_WIDTH, CarRacing
 
 from f1_ai.config import (
+    CORRIDOR_OBSERVATION,
     LAP_TIME_REWARDS,
     PLANNED_OBSERVATION,
     RACING_RESIDUAL,
+    REFERENCE_OBSERVATIONS,
     EnvironmentConfig,
     ReferenceDrivingConfig,
 )
 from f1_ai.curriculum import CornerStart
 from f1_ai.geometry import CircuitGeometry, LapProgress
-from f1_ai.plan_features import PREVIEW_M, PlanFeatures, track_plan
+from f1_ai.plan_features import PREVIEW_M, CorridorFeatures, PlanFeatures, track_plan
 from f1_ai.rewards import lap_time_step_reward
 
 OBSERVATION_VERSION = 1
@@ -71,8 +73,20 @@ PLANNED_OBSERVATION_NAMES = (
     ),
 )
 
+CORRIDOR_OBSERVATION_NAMES = (
+    *PLANNED_OBSERVATION_NAMES,
+    *(
+        f"road_{side}_{int(distance)}_{axis}"
+        for distance in PREVIEW_M
+        for side in ("left", "right")
+        for axis in ("right", "forward")
+    ),
+)
+
 
 def _direct_observation_contract(config: EnvironmentConfig) -> tuple[int, tuple[str, ...]]:
+    if config.observation_profile == CORRIDOR_OBSERVATION:
+        return 5, CORRIDOR_OBSERVATION_NAMES
     if config.observation_profile == PLANNED_OBSERVATION:
         return 4, PLANNED_OBSERVATION_NAMES
     if config.observation_profile == "racing-v2":
@@ -112,6 +126,7 @@ class NumericCarRacing(CarRacing):
         self.action_space = spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32)
         self.geometry: CircuitGeometry | None = None
         self._plan_features: PlanFeatures | None = None
+        self._corridor_features: CorridorFeatures | None = None
         self._corner_start: CornerStart | None = None
         self.progress: LapProgress | None = None
         self.elapsed_steps = 0
@@ -146,7 +161,7 @@ class NumericCarRacing(CarRacing):
         forward = np.array(hull.GetWorldVector((0, 1)))
         right = np.array(hull.GetWorldVector((1, 0)))
         velocity = np.array(hull.linearVelocity)
-        planned = self.config.observation_profile == PLANNED_OBSERVATION
+        planned = self.config.observation_profile in REFERENCE_OBSERVATIONS
         racing = self.config.observation_profile != "legacy"
         lookahead = RACING_LOOKAHEAD_METERS if racing else LOOKAHEAD_METERS
         if planned:
@@ -170,6 +185,14 @@ class NumericCarRacing(CarRacing):
             ]
             if not planned:
                 extra.extend(self.previous_action)
+        corridor = ()
+        if self.config.observation_profile == CORRIDOR_OBSERVATION:
+            if self._corridor_features is None:
+                angles = np.array([tile[1] for tile in self.track])
+                self._corridor_features = CorridorFeatures(geometry, angles)
+            corridor = self._corridor_features.observation(
+                projection.distance, position, forward, right
+            )
         state = np.array(
             [
                 np.dot(velocity, forward) / self.config.forward_speed_scale,
@@ -182,6 +205,7 @@ class NumericCarRacing(CarRacing):
                 self.car.wheels[0].joint.angle / 0.4,
                 *(extra if planned else waypoints),
                 *(waypoints if planned else extra),
+                *corridor,
             ],
             dtype=np.float32,
         )
@@ -198,12 +222,13 @@ class NumericCarRacing(CarRacing):
         start = (options or {}).get("corner_start")
         if start is not None and (
             not isinstance(start, CornerStart)
-            or self.config.observation_profile != PLANNED_OBSERVATION
+            or self.config.observation_profile not in REFERENCE_OBSERVATIONS
             or self.config.control_profile != "direct"
         ):
             raise ValueError("La salida de sector requiere el currículo de Formula directo.")
         self.geometry = None
         self._plan_features = None
+        self._corridor_features = None
         self.progress = None
         self.elapsed_steps = 0
         self.off_track_steps = 0

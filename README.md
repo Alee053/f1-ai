@@ -603,6 +603,19 @@ uv run f1-ai --config configs/formula-direct-cuda.toml train \
   --initial-model runs/direct-bc/best_model.zip --output runs/direct-ppo
 ```
 
+### Observaciones del corredor
+
+`formula-corridor-cuda.toml` añade los bordes izquierdo y derecho del asfalto
+a 6, 15, 30, 60 y 100 m. Las coordenadas se expresan respecto al coche. La
+red conserva las entradas de la trazada y el mando directo sobre giro y pedal.
+Se puede iniciar desde `planned-v3`. Las columnas nuevas del actor y del
+crítico empiezan en cero.
+
+```bash
+uv run f1-ai --config configs/formula-corridor-cuda.toml train \
+  --initial-model runs/ppo-stable/model.zip --output runs/corridor-ppo
+```
+
 ### Currículo de curvas
 
 `formula-curriculum-cuda.toml` parte de un checkpoint de mandos directos y sube

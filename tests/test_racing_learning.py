@@ -7,13 +7,14 @@ import torch
 from gymnasium.utils.env_checker import check_env
 
 from f1_ai import imitation
+from f1_ai.artifacts import provenance, write_json
 from f1_ai.config import load_config
 from f1_ai.curriculum import CornerCurriculum, CornerStart
 from f1_ai.environment import CircuitPool, make_env, observation_contract
 from f1_ai.imitation import validate_dataset
 from f1_ai.racing_line import ReferenceConfig
 from f1_ai.rewards import FrontLockPenalty, RearSlipPenalty, lap_time_step_reward
-from f1_ai.training import load_model, train
+from f1_ai.training import _initialize_policy, create_model, load_model, train
 
 
 def test_planned_policy_controls_steering_and_pedal_directly():
@@ -30,6 +31,40 @@ def test_planned_policy_controls_steering_and_pedal_directly():
         assert env.observation_space.contains(observation) and env.elapsed_steps == 1
     finally:
         env.close()
+
+
+def test_corridor_preserves_old_inputs_and_transfers_initial_policy(tmp_path):
+    corridor = load_config("configs/formula-corridor-cuda.toml")
+    corridor = replace(corridor, ppo=replace(corridor.ppo, device="cpu"))
+    planned = replace(
+        corridor, environment=replace(corridor.environment, observation_profile="planned-v3")
+    )
+    old_env = make_env(planned.environment)
+    new_env = make_env(corridor.environment)
+    try:
+        old_obs, _ = old_env.reset(seed=7)
+        new_obs, _ = new_env.reset(seed=7)
+        version, names = observation_contract(corridor.environment)
+        assert version == 5 and new_obs.shape == (len(names),) == (61,)
+        np.testing.assert_array_equal(old_obs, new_obs[:41])
+        assert (
+            new_obs[names.index("road_left_6_right")] < new_obs[names.index("road_right_6_right")]
+        )
+        assert new_env.observation_space.contains(new_obs)
+
+        original = create_model(planned, old_env)
+        checkpoint = tmp_path / "model.zip"
+        original.save(checkpoint)
+        metadata = provenance(planned, kind="ppo")
+        write_json(tmp_path / "metadata.json", metadata)
+        expanded = create_model(corridor, new_env)
+        assert _initialize_policy(expanded, corridor, checkpoint, metadata)
+        before = original.predict(old_obs, deterministic=True)[0]
+        after = expanded.predict(new_obs, deterministic=True)[0]
+        np.testing.assert_allclose(before, after, atol=1e-6)
+    finally:
+        old_env.close()
+        new_env.close()
 
 
 @pytest.mark.parametrize("braking", [False, True])

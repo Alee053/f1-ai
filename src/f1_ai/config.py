@@ -11,6 +11,8 @@ from f1_ai.vehicle import FormulaConfig
 
 RACING_RESIDUAL = "racing-residual-v1"
 PLANNED_OBSERVATION = "planned-v3"
+CORRIDOR_OBSERVATION = "corridor-v4"
+REFERENCE_OBSERVATIONS = {PLANNED_OBSERVATION, CORRIDOR_OBSERVATION}
 REFERENCE_TIME = "reference-time-v1"
 LAP_TIME_REWARDS = {"lap-time-v1", REFERENCE_TIME}
 
@@ -72,8 +74,8 @@ class EnvironmentConfig:
             raise ValueError("La cobertura mínima debe pertenecer a (0, 1].")
         if not 0 < self.steering_scale <= 1:
             raise ValueError("La escala de dirección debe pertenecer a (0, 1].")
-        if self.observation_profile not in {"legacy", "racing-v2", PLANNED_OBSERVATION}:
-            raise ValueError("observation_profile debe ser legacy, racing-v2 o planned-v3.")
+        if self.observation_profile not in {"legacy", "racing-v2", *REFERENCE_OBSERVATIONS}:
+            raise ValueError("Perfil de observaciones desconocido.")
         if self.control_profile not in {"direct", RACING_RESIDUAL}:
             raise ValueError(f"control_profile debe ser direct o {RACING_RESIDUAL}.")
         if self.control_profile == RACING_RESIDUAL and self.observation_profile != "racing-v2":
@@ -86,7 +88,7 @@ class EnvironmentConfig:
             not isinstance(self.racing_reference, ReferenceDrivingConfig)
             or (
                 self.control_profile != RACING_RESIDUAL
-                and self.observation_profile != PLANNED_OBSERVATION
+                and self.observation_profile not in REFERENCE_OBSERVATIONS
             )
         ):
             raise ValueError("racing_reference requiere un perfil con trazada.")
@@ -217,7 +219,7 @@ class ExperimentConfig:
 
     def __post_init__(self):
         if self.ppo.corner_curriculum and (
-            self.environment.observation_profile != PLANNED_OBSERVATION
+            self.environment.observation_profile not in REFERENCE_OBSERVATIONS
             or self.environment.control_profile != "direct"
         ):
             raise ValueError(
