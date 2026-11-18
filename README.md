@@ -722,13 +722,16 @@ uv run --extra neat f1-ai --config "$config" train-neat --output runs/road-neat
 uv run --extra neat f1-ai --config "$config" evaluate --agents neat \
   --model runs/road-neat/best_model.json --split validation --output runs/road-neat-validation
 uv run f1-ai --config "$config" evaluate --agents bc-ppo \
-  --model runs/road-ppo-distilled/best_model.zip --split validation \
+  --model runs/road-ppo-distilled/model.zip --split validation \
   --output runs/road-ppo-distilled-validation
+uv run f1-ai --config "$config" evaluate --agents ppo \
+  --model runs/road-ppo-cold/model.zip --split validation --output runs/road-ppo-cold-validation
 ```
 
-Comparar con las mismas semillas de validación. Registrar cobertura y
-salidas si todavía no hay vueltas completas. Las semillas 200 a 204 se
-reservan para la prueba final.
+Para medir al final del presupuesto, evaluar `model.zip`, que se guarda
+después de la última actualización de PPO. NEAT guarda el resultado de
+cada generación en `generation-*.json` y exporta el campeón seleccionado
+en `best_model.json`. Las semillas 200 a 204 se reservan para la prueba final.
 
 ### Currículo de curvas
 
