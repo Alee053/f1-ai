@@ -31,7 +31,29 @@ class CorridorFeatures:
         return (relative / (PREVIEW_M + TRACK_WIDTH)[:, None, None]).ravel()
 
 
-@lru_cache(maxsize=32)
+class ReferenceTimeProgress:
+    """Tiempo acumulado de referencia en estaciones equiespaciadas del eje."""
+
+    def __init__(self, plan):
+        lengths = CircuitGeometry(plan.points).lengths
+        speeds = plan.speed_m_s
+        seconds = 2 * lengths / (speeds + np.roll(speeds, -1))
+        elapsed = np.r_[0, np.cumsum(seconds)]
+        self.fractions = elapsed / elapsed[-1]
+        self.stations = np.linspace(0, 1, len(elapsed))
+
+    def fraction(self, track_fraction):
+        laps, phase = divmod(track_fraction, 1.0)
+        return laps + float(np.interp(phase, self.stations, self.fractions))
+
+    def adjustment(self, start, before, after, length):
+        estimated = self.fraction((start + after) / length) - self.fraction(
+            (start + before) / length
+        )
+        return estimated - (after - before) / length
+
+
+@lru_cache(maxsize=96)
 def track_plan(points_bytes, vehicle, settings):
     points = np.frombuffer(points_bytes, dtype=np.float64).reshape(-1, 2)
     return plan_reference(points, TRACK_WIDTH, vehicle, settings)

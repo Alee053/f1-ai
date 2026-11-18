@@ -153,6 +153,7 @@ class PPOConfig:
     braking_curriculum: bool = False
     rear_slip_penalty: float = 0.0
     front_lock_penalty: float = 0.0
+    time_progress_mix: float = 0.0
 
     def __post_init__(self):
         if not isinstance(self.device, str) or self.device not in {"cpu", "cuda"}:
@@ -203,6 +204,8 @@ class PPOConfig:
             raise ValueError("rear_slip_penalty debe pertenecer a [0, 2].")
         if isinstance(self.front_lock_penalty, bool) or not 0 <= self.front_lock_penalty <= 2:
             raise ValueError("front_lock_penalty debe pertenecer a [0, 2].")
+        if isinstance(self.time_progress_mix, bool) or not 0 <= self.time_progress_mix <= 1:
+            raise ValueError("time_progress_mix debe pertenecer a [0, 1].")
         if (
             type(self.sde_sample_freq) is not int
             or self.sde_sample_freq < -1
@@ -218,6 +221,11 @@ class ExperimentConfig:
     ppo: PPOConfig
 
     def __post_init__(self):
+        if self.ppo.time_progress_mix and (
+            self.environment.observation_profile not in REFERENCE_OBSERVATIONS
+            or self.environment.reward_profile != "lap-time-v1"
+        ):
+            raise ValueError("time_progress_mix requiere trazada y recompensa lap-time-v1.")
         if self.ppo.corner_curriculum and (
             self.environment.observation_profile not in REFERENCE_OBSERVATIONS
             or self.environment.control_profile != "direct"

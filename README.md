@@ -480,6 +480,13 @@ la recompensa existente. El modelo del plan omite transferencia longitudinal y
 rotación de ruedas; sus límites de velocidad se deben contrastar y ajustar con
 los ensayos físicos antes de usarlo como profesor de BC o DAgger.
 
+`--time-search-passes 3` prueba desplazamientos laterales suaves y ordena
+las alternativas por un tiempo aproximado que incluye aceleración y frenada.
+Cada alternativa final pasa por el corredor, el límite de giro y el perfil
+completo de velocidad antes de competir con las referencias geométricas. En
+un TOML se activa con `time_search_passes = 3` en
+`[environment.racing_reference.plan]`.
+
 ### Aprendizaje de la referencia global
 
 `configs/formula-racing-cuda.toml` define una generación independiente. Su perfil
@@ -615,6 +622,11 @@ crítico empiezan en cero.
 uv run f1-ai --config configs/formula-corridor-cuda.toml train \
   --initial-model runs/ppo-stable/model.zip --output runs/corridor-ppo
 ```
+
+`time_progress_mix` en `[ppo]` acepta valores entre 0 y 1. El valor 1
+distribuye el premio de avance según el tiempo de referencia por sector. El
+total de avance en una vuelta completa se conserva y la evaluación usa el
+mismo perfil `lap-time-v1`.
 
 ### Currículo de curvas
 

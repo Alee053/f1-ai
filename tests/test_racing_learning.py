@@ -1,5 +1,6 @@
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -13,6 +14,7 @@ from f1_ai.config import load_config
 from f1_ai.curriculum import CornerCurriculum, CornerStart
 from f1_ai.environment import CircuitPool, make_env, observation_contract
 from f1_ai.imitation import validate_dataset
+from f1_ai.plan_features import ReferenceTimeProgress
 from f1_ai.racing_line import ReferenceConfig
 from f1_ai.rewards import FrontLockPenalty, RearSlipPenalty, lap_time_step_reward
 from f1_ai.training import _initialize_policy, create_model, load_model, train
@@ -153,6 +155,20 @@ def test_lap_objective_prefers_less_time_for_equal_valid_progress_and_tolerates_
     assert lap_time_step_reward(0.001, **{**steady, "action_delta": np.ones(2)}) < baseline
     assert lap_time_step_reward(0.001, **{**steady, "sideslip_rad": 0.6}) < baseline
     assert lap_time_step_reward(0.1, **{**steady, "on_road": False}) < 0
+
+
+def test_reference_time_credit_redistributes_reward_and_wraps_sectors():
+    plan = SimpleNamespace(
+        points=np.array([[0, 0], [10, 0], [10, 10], [0, 10]]),
+        speed_m_s=np.array([2.0, 2.0, 8.0, 8.0]),
+    )
+    profile = ReferenceTimeProgress(plan)
+    assert profile.adjustment(0, 0, 10, 40) > 0
+    assert profile.adjustment(0, 20, 30, 40) < 0
+    assert profile.adjustment(25, 0, 40, 40) == pytest.approx(0)
+    assert profile.adjustment(30, 0, 20, 40) == pytest.approx(
+        profile.adjustment(30, 0, 10, 40) + profile.adjustment(30, 10, 20, 40)
+    )
 
 
 def test_training_penalty_only_charges_excess_slip_of_driven_wheels(monkeypatch):
