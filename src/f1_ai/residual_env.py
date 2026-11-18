@@ -1,7 +1,6 @@
 """Correcciones de trazada y velocidad sobre el seguidor de Formula."""
 
 import math
-from functools import lru_cache
 
 import gymnasium as gym
 import numpy as np
@@ -10,12 +9,11 @@ from gymnasium.envs.box2d.car_racing import FPS, TRACK_WIDTH
 
 from f1_ai.config import REFERENCE_TIME, ReferenceDrivingConfig
 from f1_ai.environment import RACING_OBSERVATION_NAMES, NumericCarRacing
+from f1_ai.plan_features import PREVIEW_M, track_plan
 from f1_ai.racing_controller import RacingController, ReferenceState
-from f1_ai.racing_line import plan_reference
 from f1_ai.rewards import LAP_PROGRESS_POINTS
 
 RESIDUAL_ACTION_NAMES = ("raceline_offset", "target_speed_adjustment")
-PREVIEW_M = np.array([6.0, 15.0, 30.0, 60.0, 100.0])
 RESIDUAL_OBSERVATION_NAMES = (
     *RACING_OBSERVATION_NAMES[:8],
     *RACING_OBSERVATION_NAMES[-10:],
@@ -29,12 +27,6 @@ RESIDUAL_OBSERVATION_NAMES = (
     "filtered_offset",
     "filtered_speed_adjustment",
 )
-
-
-@lru_cache(maxsize=32)
-def _track_plan(points_bytes, vehicle, settings):
-    points = np.frombuffer(points_bytes, dtype=np.float64).reshape(-1, 2)
-    return plan_reference(points, TRACK_WIDTH, vehicle, settings)
 
 
 class ResidualRacingEnv(gym.Wrapper):
@@ -58,7 +50,7 @@ class ResidualRacingEnv(gym.Wrapper):
 
     def reset(self, *, seed=None, options=None):
         physical, info = self.env.reset(seed=seed, options=options)
-        plan = _track_plan(
+        plan = track_plan(
             self.env.geometry.points.tobytes(), self.env.config.formula, self._reference.plan
         )
         self.controller = RacingController(plan, self._reference.follower)

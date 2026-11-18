@@ -11,16 +11,22 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from gymnasium.envs.box2d.car_racing import TRACK_WIDTH
 from stable_baselines3 import PPO
 
 from f1_ai.agents import PPOAgent, PursuitAgent
 from f1_ai.artifacts import create_directory, provenance, write_json
-from f1_ai.config import LAP_TIME_REWARDS, RACING_RESIDUAL, EnvironmentConfig, ExperimentConfig
+from f1_ai.config import (
+    LAP_TIME_REWARDS,
+    RACING_RESIDUAL,
+    EnvironmentConfig,
+    ExperimentConfig,
+    ReferenceDrivingConfig,
+)
 from f1_ai.environment import make_env, observation_contract
 from f1_ai.evaluation import driving_score, evaluate_episode, summarize
+from f1_ai.plan_features import track_plan
 from f1_ai.racing_controller import FollowerConfig, RacingController, ReferenceState
-from f1_ai.racing_line import ReferenceConfig, plan_reference
+from f1_ai.racing_line import ReferenceConfig
 from f1_ai.supervision import fit_actor as fit_actor
 from f1_ai.training import create_model
 
@@ -63,8 +69,9 @@ def collect_dataset(
         raise ValueError("El experto debe ser pursuit o racing.")
     if teacher_kind == "racing" and config.environment.vehicle_model != "formula-v1":
         raise ValueError("El experto racing requiere Formula.")
-    reference_settings = reference_settings or ReferenceConfig()
-    follower_settings = follower_settings or FollowerConfig()
+    reference = config.environment.racing_reference or ReferenceDrivingConfig()
+    reference_settings = reference_settings or reference.plan
+    follower_settings = follower_settings or reference.follower
     teacher = (
         PursuitAgent(target_speed, lateral_acceleration, environment=config.environment)
         if teacher_kind == "pursuit"
@@ -79,9 +86,8 @@ def collect_dataset(
             observation, _ = env.reset(seed=seed)
             if teacher_kind == "racing":
                 teacher = RacingController(
-                    plan_reference(
-                        env.geometry.points,
-                        TRACK_WIDTH,
+                    track_plan(
+                        env.geometry.points.tobytes(),
                         config.environment.formula,
                         reference_settings,
                     ),
@@ -172,9 +178,10 @@ def record_demonstrations(
         "teacher_kind": teacher_kind,
     }
     if teacher_kind == "racing":
+        reference = config.environment.racing_reference or ReferenceDrivingConfig()
         metadata["teacher"].update(
-            reference_settings=asdict(ReferenceConfig()),
-            follower_settings=asdict(FollowerConfig()),
+            reference_settings=asdict(reference.plan),
+            follower_settings=asdict(reference.follower),
         )
         metadata["teacher_information_regime"] = "full_map_and_physical_state"
     write_json(output / "metadata.json", metadata)

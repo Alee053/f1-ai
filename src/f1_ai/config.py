@@ -10,6 +10,7 @@ from f1_ai.racing_line import ReferenceConfig
 from f1_ai.vehicle import FormulaConfig
 
 RACING_RESIDUAL = "racing-residual-v1"
+PLANNED_OBSERVATION = "planned-v3"
 REFERENCE_TIME = "reference-time-v1"
 LAP_TIME_REWARDS = {"lap-time-v1", REFERENCE_TIME}
 
@@ -71,8 +72,8 @@ class EnvironmentConfig:
             raise ValueError("La cobertura mínima debe pertenecer a (0, 1].")
         if not 0 < self.steering_scale <= 1:
             raise ValueError("La escala de dirección debe pertenecer a (0, 1].")
-        if self.observation_profile not in {"legacy", "racing-v2"}:
-            raise ValueError("observation_profile debe ser legacy o racing-v2.")
+        if self.observation_profile not in {"legacy", "racing-v2", PLANNED_OBSERVATION}:
+            raise ValueError("observation_profile debe ser legacy, racing-v2 o planned-v3.")
         if self.control_profile not in {"direct", RACING_RESIDUAL}:
             raise ValueError(f"control_profile debe ser direct o {RACING_RESIDUAL}.")
         if self.control_profile == RACING_RESIDUAL and self.observation_profile != "racing-v2":
@@ -83,11 +84,12 @@ class EnvironmentConfig:
             )
         if self.racing_reference is not None and (
             not isinstance(self.racing_reference, ReferenceDrivingConfig)
-            or self.control_profile != RACING_RESIDUAL
-        ):
-            raise ValueError(
-                "racing_reference requiere una configuración de control residual válida."
+            or (
+                self.control_profile != RACING_RESIDUAL
+                and self.observation_profile != PLANNED_OBSERVATION
             )
+        ):
+            raise ValueError("racing_reference requiere un perfil con trazada.")
         if self.reward_profile not in {"progress", "track", *LAP_TIME_REWARDS}:
             raise ValueError("Perfil de recompensa desconocido.")
         if self.reward_profile == REFERENCE_TIME and self.control_profile != RACING_RESIDUAL:
@@ -95,10 +97,10 @@ class EnvironmentConfig:
                 f"{REFERENCE_TIME} requiere la trazada de referencia del control residual."
             )
         if self.vehicle_model != "formula-v1" and (
-            self.observation_profile == "racing-v2" or self.reward_profile in LAP_TIME_REWARDS
+            self.observation_profile != "legacy" or self.reward_profile in LAP_TIME_REWARDS
         ):
             raise ValueError(
-                "Las observaciones racing-v2 y los perfiles de tiempo requieren Formula."
+                "Las observaciones de carrera y los perfiles de tiempo requieren Formula."
             )
 
 

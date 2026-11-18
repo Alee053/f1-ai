@@ -15,6 +15,22 @@ from f1_ai.rewards import lap_time_step_reward
 from f1_ai.training import load_model, train
 
 
+def test_planned_policy_controls_steering_and_pedal_directly():
+    config = load_config("configs/formula-direct-cuda.toml")
+    env = make_env(config.environment)
+    try:
+        observation, _ = env.reset(seed=0)
+        version, names = observation_contract(config.environment)
+        assert version == 4 and observation.shape == (len(names),) == (41,)
+        assert "target_speed_error" in names and "previous_pedal" not in names
+        action = np.array([0.25, 0.3], dtype=np.float32)
+        observation, _, _, _, _ = env.step(action)
+        np.testing.assert_array_equal(env.previous_action, action)
+        assert env.observation_space.contains(observation) and env.elapsed_steps == 1
+    finally:
+        env.close()
+
+
 def test_racing_observation_exposes_wheel_feedback_and_actual_previous_command():
     config = load_config("configs/formula-racing-cuda.toml")
     env = make_env(config.environment)

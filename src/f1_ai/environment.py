@@ -8,8 +8,15 @@ import numpy as np
 from gymnasium import spaces
 from gymnasium.envs.box2d.car_racing import FPS, PLAYFIELD, TRACK_WIDTH, CarRacing
 
-from f1_ai.config import LAP_TIME_REWARDS, RACING_RESIDUAL, EnvironmentConfig
+from f1_ai.config import (
+    LAP_TIME_REWARDS,
+    PLANNED_OBSERVATION,
+    RACING_RESIDUAL,
+    EnvironmentConfig,
+    ReferenceDrivingConfig,
+)
 from f1_ai.geometry import CircuitGeometry, LapProgress
+from f1_ai.plan_features import PREVIEW_M, PlanFeatures, track_plan
 from f1_ai.rewards import lap_time_step_reward
 
 OBSERVATION_VERSION = 1
@@ -48,7 +55,25 @@ RACING_OBSERVATION_NAMES = (
 )
 
 
+PLANNED_OBSERVATION_NAMES = (
+    *RACING_OBSERVATION_NAMES[:8],
+    *RACING_OBSERVATION_NAMES[-10:-2],
+    "raceline_error",
+    "target_speed_error",
+    "profile_acceleration",
+    "near_target_right",
+    "near_target_forward",
+    *(
+        f"raceline_{int(distance)}_{field}"
+        for distance in PREVIEW_M
+        for field in ("right", "forward", "target_speed", "curvature")
+    ),
+)
+
+
 def _direct_observation_contract(config: EnvironmentConfig) -> tuple[int, tuple[str, ...]]:
+    if config.observation_profile == PLANNED_OBSERVATION:
+        return 4, PLANNED_OBSERVATION_NAMES
     if config.observation_profile == "racing-v2":
         return 2, RACING_OBSERVATION_NAMES
     return OBSERVATION_VERSION, OBSERVATION_NAMES
@@ -85,6 +110,7 @@ class NumericCarRacing(CarRacing):
         )
         self.action_space = spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32)
         self.geometry: CircuitGeometry | None = None
+        self._plan_features: PlanFeatures | None = None
         self.progress: LapProgress | None = None
         self.elapsed_steps = 0
         self.off_track_steps = 0
@@ -109,18 +135,31 @@ class NumericCarRacing(CarRacing):
         forward = np.array(hull.GetWorldVector((0, 1)))
         right = np.array(hull.GetWorldVector((1, 0)))
         velocity = np.array(hull.linearVelocity)
-        racing = self.config.observation_profile == "racing-v2"
+        planned = self.config.observation_profile == PLANNED_OBSERVATION
+        racing = self.config.observation_profile != "legacy"
         lookahead = RACING_LOOKAHEAD_METERS if racing else LOOKAHEAD_METERS
-        future = self.geometry.sample(projection.distance + lookahead) - position
-        scale = lookahead[:, None] if racing else WAYPOINT_SCALE
-        waypoints = np.column_stack((future @ right, future @ forward)) / scale
+        if planned:
+            if self._plan_features is None:
+                reference = self.config.racing_reference or ReferenceDrivingConfig()
+                plan = track_plan(
+                    self.geometry.points.tobytes(), self.config.formula, reference.plan
+                )
+                self._plan_features = PlanFeatures(plan, reference.follower.lookahead_seconds)
+            waypoints = self._plan_features.observation(
+                position, forward, right, float(velocity @ forward)
+            )
+        else:
+            future = self.geometry.sample(projection.distance + lookahead) - position
+            scale = lookahead[:, None] if racing else WAYPOINT_SCALE
+            waypoints = (np.column_stack((future @ right, future @ forward)) / scale).ravel()
         extra = []
         if racing:
             extra = [
                 *(np.array(self.car.telemetry["slip_ratios"]) / 2.0),
                 *self.car.telemetry["locked_wheels"],
-                *self.previous_action,
             ]
+            if not planned:
+                extra.extend(self.previous_action)
         state = np.array(
             [
                 np.dot(velocity, forward) / self.config.forward_speed_scale,
@@ -131,8 +170,8 @@ class NumericCarRacing(CarRacing):
                 projection.lateral / TRACK_WIDTH,
                 self.road_contact_fraction,
                 self.car.wheels[0].joint.angle / 0.4,
-                *waypoints.ravel(),
-                *extra,
+                *(extra if planned else waypoints),
+                *(waypoints if planned else extra),
             ],
             dtype=np.float32,
         )
@@ -147,6 +186,7 @@ class NumericCarRacing(CarRacing):
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         self.geometry = None
+        self._plan_features = None
         self.progress = None
         self.elapsed_steps = 0
         self.off_track_steps = 0
