@@ -131,9 +131,7 @@ class FormulaCar(Car):
             axle_fraction = (
                 config.brake_front_fraction if index < 2 else 1 - config.brake_front_fraction
             )
-            brake_torque = (
-                wheel.brake * config.brake_force_limit_n * axle_fraction * wheel.wheel_rad / 2
-            )
+            brake_torque = config.brake_force(wheel.brake) * axle_fraction * wheel.wheel_rad / 2
             for _ in range(steps):
                 slip = (wheel.omega * wheel.wheel_rad - vf) / max(abs(vf), 3.0)
                 fx, fy, limit = tyre_forces(config, slip, angle, loads[index], surface)

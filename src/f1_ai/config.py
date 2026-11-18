@@ -11,6 +11,10 @@ from f1_ai.vehicle import FormulaConfig
 
 RACING_RESIDUAL = "racing-residual-v1"
 PLANNED_OBSERVATION = "planned-v3"
+CORRIDOR_OBSERVATION = "corridor-v4"
+ROAD_OBSERVATION = "road-v5"
+REFERENCE_OBSERVATIONS = {PLANNED_OBSERVATION, CORRIDOR_OBSERVATION}
+MAP_OBSERVATIONS = REFERENCE_OBSERVATIONS | {ROAD_OBSERVATION}
 REFERENCE_TIME = "reference-time-v1"
 LAP_TIME_REWARDS = {"lap-time-v1", REFERENCE_TIME}
 
@@ -72,8 +76,8 @@ class EnvironmentConfig:
             raise ValueError("La cobertura mínima debe pertenecer a (0, 1].")
         if not 0 < self.steering_scale <= 1:
             raise ValueError("La escala de dirección debe pertenecer a (0, 1].")
-        if self.observation_profile not in {"legacy", "racing-v2", PLANNED_OBSERVATION}:
-            raise ValueError("observation_profile debe ser legacy, racing-v2 o planned-v3.")
+        if self.observation_profile not in {"legacy", "racing-v2", *MAP_OBSERVATIONS}:
+            raise ValueError("Perfil de observaciones desconocido.")
         if self.control_profile not in {"direct", RACING_RESIDUAL}:
             raise ValueError(f"control_profile debe ser direct o {RACING_RESIDUAL}.")
         if self.control_profile == RACING_RESIDUAL and self.observation_profile != "racing-v2":
@@ -86,7 +90,7 @@ class EnvironmentConfig:
             not isinstance(self.racing_reference, ReferenceDrivingConfig)
             or (
                 self.control_profile != RACING_RESIDUAL
-                and self.observation_profile != PLANNED_OBSERVATION
+                and self.observation_profile not in MAP_OBSERVATIONS
             )
         ):
             raise ValueError("racing_reference requiere un perfil con trazada.")
@@ -149,8 +153,14 @@ class PPOConfig:
     squash_output: bool = False
     corner_curriculum: bool = False
     braking_curriculum: bool = False
+    recovery_curriculum: bool = False
+    launch_curriculum: bool = False
+    wide_entry_curriculum: bool = False
     rear_slip_penalty: float = 0.0
     front_lock_penalty: float = 0.0
+    time_progress_mix: float = 0.0
+    rehearsal_learning_rate: float = 1e-4
+    road_contact_penalty: float = 0.0
 
     def __post_init__(self):
         if not isinstance(self.device, str) or self.device not in {"cpu", "cuda"}:
@@ -193,14 +203,25 @@ class PPOConfig:
             raise ValueError("La salida acotada de esta política requiere use_sde.")
         if type(self.corner_curriculum) is not bool:
             raise ValueError("corner_curriculum debe ser booleano.")
-        if type(self.braking_curriculum) is not bool or (
-            self.braking_curriculum and not self.corner_curriculum
+        for name in (
+            "braking_curriculum",
+            "recovery_curriculum",
+            "launch_curriculum",
+            "wide_entry_curriculum",
         ):
-            raise ValueError("braking_curriculum requiere el currículo de curvas.")
+            enabled = getattr(self, name)
+            if type(enabled) is not bool or (enabled and not self.corner_curriculum):
+                raise ValueError(f"{name} requiere el currículo de curvas.")
         if isinstance(self.rear_slip_penalty, bool) or not 0 <= self.rear_slip_penalty <= 2:
             raise ValueError("rear_slip_penalty debe pertenecer a [0, 2].")
         if isinstance(self.front_lock_penalty, bool) or not 0 <= self.front_lock_penalty <= 2:
             raise ValueError("front_lock_penalty debe pertenecer a [0, 2].")
+        if isinstance(self.time_progress_mix, bool) or not 0 <= self.time_progress_mix <= 1:
+            raise ValueError("time_progress_mix debe pertenecer a [0, 1].")
+        if not 0 < self.rehearsal_learning_rate < 1:
+            raise ValueError("rehearsal_learning_rate debe pertenecer a (0, 1).")
+        if isinstance(self.road_contact_penalty, bool) or not 0 <= self.road_contact_penalty <= 2:
+            raise ValueError("road_contact_penalty debe pertenecer a [0, 2].")
         if (
             type(self.sde_sample_freq) is not int
             or self.sde_sample_freq < -1
@@ -216,18 +237,29 @@ class ExperimentConfig:
     ppo: PPOConfig
 
     def __post_init__(self):
+        if self.ppo.wide_entry_curriculum and self.environment.reward_profile != "lap-time-v1":
+            raise ValueError("wide_entry_curriculum requiere recompensa lap-time-v1.")
+        if self.ppo.time_progress_mix and (
+            self.environment.observation_profile not in MAP_OBSERVATIONS
+            or self.environment.reward_profile != "lap-time-v1"
+        ):
+            raise ValueError("time_progress_mix requiere trazada y recompensa lap-time-v1.")
         if self.ppo.corner_curriculum and (
-            self.environment.observation_profile != PLANNED_OBSERVATION
+            self.environment.observation_profile not in MAP_OBSERVATIONS
             or self.environment.control_profile != "direct"
         ):
             raise ValueError(
                 "El currículo de curvas requiere Formula con mandos directos y trazada."
             )
-        if (self.ppo.rear_slip_penalty or self.ppo.front_lock_penalty) and (
+        if (
+            self.ppo.rear_slip_penalty
+            or self.ppo.front_lock_penalty
+            or self.ppo.road_contact_penalty
+        ) and (
             self.environment.vehicle_model != "formula-v1"
             or self.environment.control_profile != "direct"
         ):
-            raise ValueError("Los costes de deslizamiento por eje requieren Formula directo.")
+            raise ValueError("Los costes de neumáticos requieren Formula con mandos directos.")
 
 
 def load_config(path: str | Path) -> ExperimentConfig:

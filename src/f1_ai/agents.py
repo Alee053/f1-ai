@@ -6,9 +6,11 @@ import numpy as np
 
 from f1_ai.config import EnvironmentConfig
 from f1_ai.environment import (
+    CORRIDOR_OBSERVATION_NAMES,
     OBSERVATION_NAMES,
     PLANNED_OBSERVATION_NAMES,
     RACING_OBSERVATION_NAMES,
+    ROAD_OBSERVATION_NAMES,
     WAYPOINT_SCALE,
 )
 from f1_ai.vehicle import GRAVITY, aerodynamic_forces
@@ -95,7 +97,7 @@ class PursuitAgent:
         resistance = drag + config.rolling_resistance * config.mass_kg * GRAVITY
         force = config.mass_kg * acceleration + resistance
         if force < 0:
-            return -min(-force / config.brake_force_limit_n, 0.4)
+            return -config.brake_pedal(min(-force, 0.4 * config.brake_force_limit_n))
         available = min(
             config.drive_force_limit_n,
             config.power_kw * 1000 * config.drivetrain_efficiency / max(speed, 3.0),
@@ -107,9 +109,17 @@ class PPOAgent:
     def __init__(self, model):
         from f1_ai.residual_env import RESIDUAL_OBSERVATION_NAMES
 
-        valid_shapes = {(len(OBSERVATION_NAMES),), (len(RACING_OBSERVATION_NAMES),)}
-        valid_shapes.add((len(RESIDUAL_OBSERVATION_NAMES),))
-        valid_shapes.add((len(PLANNED_OBSERVATION_NAMES),))
+        valid_shapes = {
+            (len(fields),)
+            for fields in (
+                OBSERVATION_NAMES,
+                RACING_OBSERVATION_NAMES,
+                RESIDUAL_OBSERVATION_NAMES,
+                PLANNED_OBSERVATION_NAMES,
+                CORRIDOR_OBSERVATION_NAMES,
+                ROAD_OBSERVATION_NAMES,
+            )
+        }
         if model.observation_space.shape not in valid_shapes or model.action_space.shape != (2,):
             raise ValueError("El modelo no usa los espacios de observación y acción del proyecto.")
         self.model = model

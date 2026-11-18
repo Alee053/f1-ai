@@ -21,7 +21,10 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv
 from f1_ai.artifacts import create_directory, provenance, write_json
 from f1_ai.callbacks import DrivingEvaluation
 from f1_ai.config import (
+    CORRIDOR_OBSERVATION,
     LAP_TIME_REWARDS,
+    MAP_OBSERVATIONS,
+    PLANNED_OBSERVATION,
     RACING_RESIDUAL,
     EnvironmentConfig,
     ExperimentConfig,
@@ -29,7 +32,7 @@ from f1_ai.config import (
 )
 from f1_ai.curriculum import CornerCurriculum
 from f1_ai.environment import CircuitPool, make_env, observation_contract
-from f1_ai.rewards import FrontLockPenalty, RearSlipPenalty
+from f1_ai.rewards import FrontLockPenalty, RearSlipPenalty, RoadContactPenalty, TimeProgressReward
 from f1_ai.supervision import ActorRehearsal, RehearsalPPO
 
 
@@ -102,15 +105,33 @@ def make_training_envs(config: ExperimentConfig) -> VecEnv:
 
     def training_environment():
         env = make_env(config.environment)
+        if settings.time_progress_mix:
+            env = TimeProgressReward(env, settings.time_progress_mix)
         if settings.rear_slip_penalty:
             env = RearSlipPenalty(env, settings.rear_slip_penalty)
         if settings.front_lock_penalty:
             env = FrontLockPenalty(env, settings.front_lock_penalty)
+        if settings.road_contact_penalty:
+            env = RoadContactPenalty(env, settings.road_contact_penalty)
         env = CircuitPool(env, config.circuits.train, shuffle=True)
         info_keywords = ()
         if settings.corner_curriculum:
-            env = CornerCurriculum(env, settings.n_envs, braking=settings.braking_curriculum)
-            info_keywords = ("training_sector", "curriculum_stage")
+            env = CornerCurriculum(
+                env,
+                settings.n_envs,
+                braking=settings.braking_curriculum,
+                recovery=settings.recovery_curriculum,
+                launch=settings.launch_curriculum,
+                wide_entry=settings.wide_entry_curriculum,
+            )
+            info_keywords = (
+                "training_sector",
+                "curriculum_stage",
+                "training_recovery",
+                "training_launch",
+                "training_wide_entry",
+                "training_wide_sector_seconds",
+            )
         return TransformReward(
             Monitor(env, info_keywords=info_keywords),
             lambda reward: float(reward) * settings.reward_scale,
@@ -125,6 +146,55 @@ def make_training_envs(config: ExperimentConfig) -> VecEnv:
     )
 
 
+def _initialize_policy(
+    model: PPO,
+    config: ExperimentConfig,
+    path: Path,
+    source_metadata: dict,
+    *,
+    transfer_vehicle: bool = False,
+) -> tuple[str, ...]:
+    recorded = EnvironmentConfig(**source_metadata["configuration"]["environment"])
+    environment = config.environment
+    transfers = []
+    extend_corridor = (
+        environment.observation_profile == CORRIDOR_OBSERVATION
+        and source_metadata["observation_version"] == 4
+    )
+    if extend_corridor:
+        environment = replace(environment, observation_profile=PLANNED_OBSERVATION)
+        transfers.append("zero_initialized_corridor_inputs")
+    if (
+        environment.observation_profile in MAP_OBSERVATIONS
+        and environment.observation_profile == recorded.observation_profile
+        and environment.racing_reference != recorded.racing_reference
+    ):
+        environment = replace(environment, racing_reference=recorded.racing_reference)
+        transfers.append("changed_reference_plan")
+    if transfer_vehicle:
+        if environment.vehicle_model != "formula-v1" or recorded.vehicle_model != "formula-v1":
+            raise ValueError("--transfer-vehicle requiere dos perfiles de Formula v1.")
+        if environment.formula != recorded.formula:
+            environment = replace(environment, formula=recorded.formula)
+            transfers.append("changed_formula_parameters")
+    source_config = replace(config, environment=environment)
+    source = load_model(path, source_config, device=config.ppo.device)
+    if type(source.policy.action_dist) is not type(model.policy.action_dist):
+        raise ValueError("La distribución de acciones de la inicialización no coincide.")
+    if source.policy.squash_output != model.policy.squash_output:
+        raise ValueError("La transformación de acciones de la inicialización no coincide.")
+    weights = source.policy.state_dict()
+    if extend_corridor:
+        added = model.observation_space.shape[0] - source.observation_space.shape[0]
+        for network in ("policy_net", "value_net"):
+            key = f"mlp_extractor.{network}.0.weight"
+            weights[key] = torch.nn.functional.pad(weights[key], (0, added))
+    model.policy.load_state_dict(weights)
+    with torch.no_grad():
+        model.policy.log_std.fill_(config.ppo.log_std_init)
+    return tuple(transfers)
+
+
 def train(
     config: ExperimentConfig,
     output: Path,
@@ -133,9 +203,12 @@ def train(
     initial_model: Path | None = None,
     resume_model: Path | None = None,
     rehearsal_dataset: Path | None = None,
+    transfer_vehicle: bool = False,
 ) -> dict:
     if initial_model is not None and resume_model is not None:
         raise ValueError("Elija inicialización de pesos o reanudación, no ambas.")
+    if transfer_vehicle and initial_model is None:
+        raise ValueError("--transfer-vehicle requiere --initial-model.")
     if rehearsal_dataset is not None and config.environment.control_profile == RACING_RESIDUAL:
         raise ValueError("El repaso BC usa mandos directos, no correcciones de la trazada.")
     if resume_model is not None and smoke:
@@ -214,16 +287,13 @@ def train(
             }
         else:
             model = create_model(config, envs, rehearsal=rehearsal_dataset is not None)
+        transfers = ()
         if initial_model is not None:
-            source = load_model(initial_model, config, device=settings.device)
-            if type(source.policy.action_dist) is not type(model.policy.action_dist):
-                raise ValueError("La distribución de acciones de la inicialización no coincide.")
-            if source.policy.squash_output != model.policy.squash_output:
-                raise ValueError("La transformación de acciones de la inicialización no coincide.")
-            model.policy.load_state_dict(source.policy.state_dict())
-            with torch.no_grad():
-                model.policy.log_std.fill_(settings.log_std_init)
-            del source
+            transfers = _initialize_policy(
+                model, config, initial_model, source_metadata, transfer_vehicle=transfer_vehicle
+            )
+            if transfers:
+                metadata["initial_policy"]["transfer"] = transfers
         if rehearsal_dataset is not None:
             from f1_ai.imitation import load_dataset
 
@@ -234,7 +304,9 @@ def train(
                 and digest != source_metadata["rehearsal"]["dataset_sha256"]
             ):
                 raise ValueError("El dataset de repaso no coincide con el del checkpoint.")
-            model.actor_rehearsal = ActorRehearsal(model, data, seed=settings.seed)
+            model.actor_rehearsal = ActorRehearsal(
+                model, data, seed=settings.seed, learning_rate=settings.rehearsal_learning_rate
+            )
             metadata["training_variant"] = "ppo_rehearsal"
             metadata["rehearsal"] = {
                 "dataset": str(rehearsal_dataset),
@@ -242,7 +314,7 @@ def train(
                 "samples": len(data["observations"]),
                 "batch_size": 256,
                 "updates_per_rollout": 4,
-                "learning_rate": 1e-4,
+                "learning_rate": settings.rehearsal_learning_rate,
                 "critic_updated": False,
                 "log_std_updated": False,
                 "optimizer_restored": False,
@@ -269,6 +341,8 @@ def train(
             else None,
         }
         write_json(output / "metadata.json", metadata)
+        if transfers:
+            model.save(output / "initialized_model.zip")
         model.set_logger(configure(str(output), ["stdout", "csv"]))
         before = torch.cat(
             [parameter.detach().flatten().clone() for parameter in model.policy.parameters()]

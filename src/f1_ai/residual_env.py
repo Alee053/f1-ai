@@ -9,7 +9,7 @@ from gymnasium.envs.box2d.car_racing import FPS, TRACK_WIDTH
 
 from f1_ai.config import REFERENCE_TIME, ReferenceDrivingConfig
 from f1_ai.environment import RACING_OBSERVATION_NAMES, NumericCarRacing
-from f1_ai.plan_features import PREVIEW_M, track_plan
+from f1_ai.plan_features import PREVIEW_M, ReferenceTimeProgress, track_plan
 from f1_ai.racing_controller import RacingController, ReferenceState
 from f1_ai.rewards import LAP_PROGRESS_POINTS
 
@@ -58,19 +58,8 @@ class ResidualRacingEnv(gym.Wrapper):
         self._curvature = np.r_[plan.curvature_m_inv, plan.curvature_m_inv[0]]
         self.filtered.fill(0)
         if self._timed_progress:
-            # Los puntos del plan corresponden a muestras equiespaciadas del eje original.
-            segment_seconds = (
-                2 * self.controller.geometry.lengths / (self._speeds[:-1] + self._speeds[1:])
-            )
-            cumulative_seconds = np.r_[0, np.cumsum(segment_seconds)]
-            self._time_fraction = cumulative_seconds / cumulative_seconds[-1]
-            self._track_fraction = np.linspace(0, 1, len(self._time_fraction))
+            self._time_progress = ReferenceTimeProgress(plan)
         return self._observation(physical), info
-
-    def _reference_time_fraction(self, forward_distance):
-        progress = self.env.progress
-        laps, phase = divmod((progress.start + forward_distance) / progress.length, 1.0)
-        return laps + float(np.interp(phase, self._track_fraction, self._time_fraction))
 
     def _observation(self, physical):
         hull = self.env.car.hull
@@ -132,11 +121,9 @@ class ResidualRacingEnv(gym.Wrapper):
             if self._timed_progress and info["off_track_steps"] == previous_off_track:
                 current_distance = progress.furthest
                 if current_distance > previous_distance:
-                    time_gain = self._reference_time_fraction(
-                        current_distance
-                    ) - self._reference_time_fraction(previous_distance)
-                    distance_gain = (current_distance - previous_distance) / progress.length
-                    reward += LAP_PROGRESS_POINTS * (time_gain - distance_gain)
+                    reward += LAP_PROGRESS_POINTS * self._time_progress.adjustment(
+                        progress.start, previous_distance, current_distance, progress.length
+                    )
             reward_sum += reward
             native_sum += info["native_reward"]
             speed_sum += info["speed"]

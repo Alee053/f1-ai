@@ -58,6 +58,11 @@ def parser() -> argparse.ArgumentParser:
         type=Path,
         help="Conservar pesos, optimizador y contador de un PPO guardado",
     )
+    training.add_argument(
+        "--transfer-vehicle",
+        action="store_true",
+        help="Permitir cambios en la física Formula v1 al usar --initial-model",
+    )
     plot = commands.add_parser("plot", help="Exportar figuras de una evaluación existente")
     plot.add_argument("--evaluation", type=Path, required=True)
     training_plot = commands.add_parser(
@@ -113,6 +118,7 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--output", type=Path, required=True)
         command.add_argument("--samples", type=int, default=128)
         command.add_argument("--iterations", type=int, default=12)
+        command.add_argument("--time-search-passes", type=int, default=0)
         command.add_argument("--max-speed", type=float, default=60, help="Límite en m/s")
         command.add_argument("--grip-fraction", type=float, default=0.75)
         command.add_argument("--braking-fraction", type=float, default=1.0)
@@ -276,6 +282,7 @@ def main():
                 settings = ReferenceConfig(
                     samples=args.samples,
                     optimization_steps=args.iterations,
+                    time_search_passes=args.time_search_passes,
                     speed_limit_m_s=args.max_speed,
                     grip_fraction=args.grip_fraction,
                     braking_fraction=args.braking_fraction,
@@ -335,6 +342,7 @@ def main():
                             initial_model=args.initial_model,
                             resume_model=args.resume_model,
                             rehearsal_dataset=args.rehearsal_dataset,
+                            transfer_vehicle=args.transfer_vehicle,
                         ),
                         indent=2,
                     )

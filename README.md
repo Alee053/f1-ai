@@ -480,6 +480,13 @@ la recompensa existente. El modelo del plan omite transferencia longitudinal y
 rotación de ruedas; sus límites de velocidad se deben contrastar y ajustar con
 los ensayos físicos antes de usarlo como profesor de BC o DAgger.
 
+`--time-search-passes 3` prueba desplazamientos laterales suaves y ordena
+las alternativas por un tiempo aproximado que incluye aceleración y frenada.
+Cada alternativa final pasa por el corredor, el límite de giro y el perfil
+completo de velocidad antes de competir con las referencias geométricas. En
+un TOML se activa con `time_search_passes = 3` en
+`[environment.racing_reference.plan]`.
+
 ### Aprendizaje de la referencia global
 
 `configs/formula-racing-cuda.toml` define una generación independiente. Su perfil
@@ -603,6 +610,70 @@ uv run f1-ai --config configs/formula-direct-cuda.toml train \
   --initial-model runs/direct-bc/best_model.zip --output runs/direct-ppo
 ```
 
+### Observaciones del corredor
+
+`formula-corridor-cuda.toml` añade los bordes izquierdo y derecho del asfalto
+a 6, 15, 30, 60 y 100 m. Las coordenadas se expresan respecto al coche. La
+red conserva las entradas de la trazada y el mando directo sobre giro y pedal.
+Se puede iniciar desde `planned-v3`. Las columnas nuevas del actor y del
+crítico empiezan en cero.
+
+En `train --initial-model` se puede cambiar el plan de referencia dentro del
+mismo modelo físico. Los metadatos identifican la transferencia y
+`initialized_model.zip` conserva la política antes de actualizarla. La
+evaluación exige la configuración del checkpoint elegido.
+
+```bash
+uv run f1-ai --config configs/formula-corridor-cuda.toml train \
+  --initial-model runs/ppo-stable/model.zip --output runs/corridor-ppo
+```
+
+`formula-corridor-recovery-cuda.toml` continúa el entrenamiento del corredor
+desde el checkpoint de 131.072 pasos. En validación ampliada, el checkpoint
+de 65.536 pasos de esta segunda etapa completó 70 de 70 circuitos sin salidas
+ni bloqueos.
+
+```bash
+uv run f1-ai --config configs/formula-corridor-recovery-cuda.toml train \
+  --initial-model runs/corridor-ppo/checkpoints/ppo_131072_steps.zip \
+  --output runs/corridor-recovery
+```
+
+`formula-corridor-calibrated-cuda.toml` aumenta la ganancia lateral del
+neumático de 10 a 13 y el ClA de 5 a 6 m². El freno conserva el reparto fijo
+por eje, con un 55 % delante, y aplica una curva progresiva al pedal. El
+banco de asfalto seco midió 4,58 g sostenidos en curva a 260 km/h y un pico
+de 5,10 g durante 0,2 s en frenada recta iniciada a 320 km/h.
+
+Con `--transfer-vehicle` se copian los pesos de una política Formula
+para iniciar el entrenamiento con otros parámetros físicos. La corrida
+guarda `initialized_model.zip` para medir el agente antes de entrenarlo
+en la nueva dinámica. La evaluación y la reanudación requieren los
+parámetros físicos del checkpoint.
+
+```bash
+uv run f1-ai --config configs/formula-corridor-calibrated-cuda.toml train \
+  --initial-model runs/corridor-recovery/checkpoints/ppo_65536_steps.zip \
+  --transfer-vehicle --output runs/corridor-calibrated
+uv run f1-ai --config configs/formula-corridor-calibrated-cuda.toml play --camera top
+```
+
+`time_search_passes` en `[environment.racing_reference.plan]` prueba
+desplazamientos suaves de la trazada dentro del corredor. Solo admite
+candidatos dentro de los límites de pista y dirección que mejoran el tiempo
+estimado del perfil de velocidad. El resultado es una referencia para la
+red. El tiempo de vuelta se mide aparte con la física de Box2D.
+
+`time_progress_mix` en `[ppo]` acepta valores entre 0 y 1. El valor 1
+distribuye el premio de avance según el tiempo de referencia por sector. El
+total de avance en una vuelta sin salidas se conserva y la evaluación usa
+el perfil `lap-time-v1`.
+
+El perfil `road-v5` usa 36 mediciones del vehículo y de los bordes. Omite las
+coordenadas de la trazada calculada, su velocidad objetivo y su curvatura.
+La imitación puede leer demostraciones de `corridor-v4` del mismo entorno.
+El cargador conserva solo las columnas que utiliza este perfil.
+
 ### Currículo de curvas
 
 `formula-curriculum-cuda.toml` parte de un checkpoint de mandos directos y sube
@@ -614,6 +685,29 @@ La probabilidad de iniciar un sector baja del 70 % al 55 % a los 32.768 pasos
 y al 25 % a los 81.920. En esas transiciones aumenta la variación de velocidad
 y orientación. La validación usa vueltas completas desde la meta. El fin de un
 sector solo trunca el episodio.
+
+`recovery_curriculum = true` en `[ppo]` aumenta la variedad de entradas en
+la segunda y tercera etapa. La mitad de los sectores de esas etapas pueden
+empezar a 14–38 m del ápice, con desplazamientos de hasta 2 m y orientación
+de hasta 10 grados respecto al eje de pista. El registro de entrenamiento
+distingue esos episodios.
+
+`launch_curriculum = true` dedica la mitad de los sectores a salidas desde
+reposo. Esos episodios empiezan en la meta y duran hasta cuatro segundos.
+Sirven para practicar la aceleración inicial con los mandos de la red.
+
+`formula-wide-entry-cuda.toml` ensaya entradas por ambos lados del eje
+con la física calibrada y la búsqueda de trazada por tiempo. Con
+`wide_entry_curriculum = true`, parte de los sectores empieza entre
+30 y 50 m antes del ápice y recorre hasta 145 m. En esos sectores se añade
+un bono por llegar antes, siempre que el vehículo complete la distancia sin
+salidas ni bloqueos. La validación sigue usando vueltas completas desde la meta.
+El preset permite entrenar 2.000.896 pasos en lotes de 2.048.
+Con `--rehearsal-dataset` se puede alternar PPO con un repaso de maniobras
+guardadas en circuitos de entrenamiento. El parámetro
+`rehearsal_learning_rate` controla la intensidad de ese repaso.
+El coste opcional `road_contact_penalty` aumenta con la fracción de ruedas
+fuera del asfalto durante PPO.
 
 El ajuste opcional `rear_slip_penalty` en `[ppo]` añade un coste al superar
 0,30 de deslizamiento longitudinal en una rueda trasera sobre el asfalto.

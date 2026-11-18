@@ -34,6 +34,8 @@ class FormulaConfig:
     brake_force_limit_n: float = 30000.0
     rolling_resistance: float = 0.015
     grass_grip_fraction: float = 0.45
+    tyre_lateral_gain: float = 10.0
+    brake_pedal_exponent: float = 1.0
 
     def __post_init__(self):
         for field in fields(self):
@@ -65,12 +67,23 @@ class FormulaConfig:
             "brake_force_limit_n": (1000, 80000),
             "rolling_resistance": (0, 0.05),
             "grass_grip_fraction": (0.1, 1),
+            "tyre_lateral_gain": (5, 20),
+            "brake_pedal_exponent": (1, 2),
         }
         for name, (low, high) in limits.items():
             if not low <= getattr(self, name) <= high:
                 raise ValueError(f"{name} debe pertenecer a [{low}, {high}].")
         if 4 * self.wheel_mass_kg >= self.mass_kg:
             raise ValueError("La masa de las ruedas debe ser menor que la masa total.")
+
+    def brake_force(self, pedal: float) -> float:
+        """Demanda longitudinal total, antes del reparto y del límite de los neumáticos."""
+        return pedal**self.brake_pedal_exponent * self.brake_force_limit_n
+
+    def brake_pedal(self, force_n: float) -> float:
+        """Convierte una demanda de frenada positiva al mando normalizado."""
+        fraction = min(force_n / self.brake_force_limit_n, 1.0)
+        return fraction ** (1 / self.brake_pedal_exponent)
 
 
 def aerodynamic_forces(speed_m_s: float, config: FormulaConfig) -> tuple[float, float]:
@@ -126,7 +139,7 @@ def tyre_forces(
     sliding = 1 - config.sliding_grip_loss * (1 - math.exp(-3 * excess_slip))
     limit = config.grip_coefficient * load_factor * surface * load_n * sliding
     longitudinal = limit * math.tanh(12 * slip_ratio)
-    lateral = -limit * math.tanh(10 * slip_angle)
+    lateral = -limit * math.tanh(config.tyre_lateral_gain * slip_angle)
     demand = math.hypot(longitudinal, lateral)
     if demand > limit:
         longitudinal *= limit / demand

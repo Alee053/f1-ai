@@ -195,7 +195,7 @@ class RacingController:
                 )
                 pedal = min(force / available, 1.0)
             else:
-                pedal = max(force / vehicle.brake_force_limit_n, -1.0)
+                pedal = -vehicle.brake_pedal(-force)
         else:
             # Recuperación moderada fuera de la envolvente nominal; no se certifica estabilidad.
             pedal = -0.1

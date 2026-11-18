@@ -69,6 +69,32 @@ class DrivingEvaluation(BaseCallback):
             )
             self.logger.record("curriculum/recent_episodes", len(recent))
             self.logger.record("curriculum/latest_episode_stage", recent[-1]["curriculum_stage"])
+            if self.config.ppo.recovery_curriculum:
+                self.logger.record(
+                    "curriculum/recent_recovery_episodes",
+                    sum(episode["training_recovery"] for episode in recent),
+                )
+            if self.config.ppo.launch_curriculum:
+                self.logger.record(
+                    "curriculum/recent_launch_episodes",
+                    sum(episode["training_launch"] for episode in recent),
+                )
+            if self.config.ppo.wide_entry_curriculum:
+                wide = [episode for episode in recent if episode["training_wide_entry"]]
+                clean_seconds = [
+                    episode["training_wide_sector_seconds"]
+                    for episode in wide
+                    if episode["training_wide_sector_seconds"] > 0
+                ]
+                self.logger.record("curriculum/recent_wide_entry_episodes", len(wide))
+                if wide:
+                    self.logger.record(
+                        "curriculum/wide_sector_clean_rate", len(clean_seconds) / len(wide)
+                    )
+                if clean_seconds:
+                    self.logger.record(
+                        "curriculum/mean_clean_wide_sector_seconds", np.mean(clean_seconds)
+                    )
         self.logger.dump(self.num_timesteps)
         print(
             f"[evaluation] steps={self.num_timesteps} "

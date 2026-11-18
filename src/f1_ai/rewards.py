@@ -3,7 +3,55 @@
 import gymnasium as gym
 import numpy as np
 
+from f1_ai.config import ReferenceDrivingConfig
+from f1_ai.plan_features import ReferenceTimeProgress, track_plan
+
 LAP_PROGRESS_POINTS = 1000.0
+
+
+class RoadContactPenalty(gym.Wrapper):
+    """Cobra la fracción de ruedas fuera del asfalto, incluso antes de salir por completo."""
+
+    def __init__(self, env: gym.Env, coefficient: float):
+        super().__init__(env)
+        self.coefficient = coefficient
+
+    def step(self, action):
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        reward -= self.coefficient * (1 - self.env.unwrapped.road_contact_fraction)
+        return observation, reward, terminated, truncated, info
+
+
+class TimeProgressReward(gym.Wrapper):
+    """Redistribuye el premio de avance hacia sectores lentos durante PPO."""
+
+    def __init__(self, env: gym.Env, mix: float):
+        super().__init__(env)
+        self.mix = mix
+        self.previous_distance = 0.0
+        self.time_progress = None
+
+    def reset(self, *, seed=None, options=None):
+        obs, info = self.env.reset(seed=seed, options=options)
+        physics = self.env.unwrapped
+        reference = physics.config.racing_reference or ReferenceDrivingConfig()
+        plan = track_plan(physics.geometry.points.tobytes(), physics.config.formula, reference.plan)
+        self.time_progress = ReferenceTimeProgress(plan)
+        self.previous_distance = 0.0
+        return obs, info
+
+    def step(self, action):
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        physics = self.env.unwrapped
+        progress = physics.progress
+        distance = progress.furthest
+        if distance > self.previous_distance and physics.road_contact_fraction >= 0.5:
+            extra = self.time_progress.adjustment(
+                progress.start, self.previous_distance, distance, progress.length
+            )
+            reward += self.mix * LAP_PROGRESS_POINTS * extra
+        self.previous_distance = distance
+        return observation, reward, terminated, truncated, info
 
 
 class RearSlipPenalty(gym.Wrapper):

@@ -6,6 +6,7 @@ estimación no sustituye una vuelta Box2D ni certifica un óptimo de tiempo.
 
 import math
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 
 import numpy as np
 
@@ -23,12 +24,15 @@ class ReferenceConfig:
     grip_fraction: float = 0.75
     road_margin_m: float = 0.75
     braking_fraction: float = 1.0
+    time_search_passes: int = 0
 
     def __post_init__(self):
         if type(self.samples) is not int or not 16 <= self.samples <= 512:
             raise ValueError("samples debe pertenecer a [16, 512].")
         if type(self.optimization_steps) is not int or not 0 <= self.optimization_steps <= 64:
             raise ValueError("optimization_steps debe pertenecer a [0, 64].")
+        if type(self.time_search_passes) is not int or not 0 <= self.time_search_passes <= 6:
+            raise ValueError("time_search_passes debe pertenecer a [0, 6].")
         for name in ("speed_limit_m_s", "grip_fraction", "road_margin_m", "braking_fraction"):
             value = getattr(self, name)
             if (
@@ -136,17 +140,19 @@ def longitudinal_limits(vehicle, speed, curvature, grip_fraction):
     )
 
 
+def _lateral_speed_cap(turn, vehicle, config):
+    low, high = 0.0, config.speed_limit_m_s
+    for _ in range(24):
+        middle = (low + high) / 2
+        if longitudinal_limits(vehicle, middle, turn, config.grip_fraction)[2]:
+            low = middle
+        else:
+            high = middle
+    return low
+
+
 def _speed_profile(lengths, curvature, vehicle, config):
-    speeds = np.zeros(len(lengths))
-    for index, turn in enumerate(curvature):
-        low, high = 0.0, config.speed_limit_m_s
-        for _ in range(24):
-            middle = (low + high) / 2
-            if longitudinal_limits(vehicle, middle, turn, config.grip_fraction)[2]:
-                low = middle
-            else:
-                high = middle
-        speeds[index] = low
+    speeds = np.array([_lateral_speed_cap(turn, vehicle, config) for turn in curvature])
     # Las pasadas incluyen la unión final/inicio: se planifica una vuelta lanzada.
     for _ in range(len(speeds)):
         previous = speeds.copy()
@@ -177,6 +183,53 @@ def _speed_profile(lengths, curvature, vehicle, config):
         raise ValueError("No existe un perfil de avance positivo con estos parámetros.")
     lap_time = float(np.sum(2 * lengths / (speeds + np.roll(speeds, -1))))
     return speeds, lap_time
+
+
+@lru_cache(maxsize=16)
+def _speed_cap_table(vehicle, config):
+    curvature = np.linspace(0, math.tan(MAX_STEERING_RAD) / vehicle.wheelbase_m, 97)
+    limits = np.array([_lateral_speed_cap(turn, vehicle, config) for turn in curvature])
+    return curvature, limits
+
+
+def _time_search(center, normals, width, offsets, vehicle, config):
+    """Prueba desplazamientos suaves usando un perfil rápido para ordenar candidatos."""
+    turns, limits = _speed_cap_table(vehicle, config)
+    accel, brake, _ = longitudinal_limits(vehicle, 20.0, 0.0, config.grip_fraction)
+    accel = max(accel, 0.5)
+    brake = max(brake * config.braking_fraction, 0.5)
+    count = min(24, max(4, len(center) // 6))
+    station = np.arange(len(center)) / len(center)
+    anchors = np.arange(count) / count
+    separation = np.abs((station[:, None] - anchors + 0.5) % 1.0 - 0.5) * count
+    basis = 0.5 * (1 + np.cos(np.pi * np.minimum(separation, 1)))
+
+    def estimated_time(lateral):
+        shape = _path_geometry(center + normals * lateral[:, None])
+        if shape is None:
+            return math.inf
+        lengths, curvature = shape
+        if np.max(np.abs(curvature)) > turns[-1]:
+            return math.inf
+        distance = np.r_[0, np.cumsum(lengths[:-1])]
+        travel = (distance[:, None] - distance) % float(lengths.sum())
+        speed_squared = np.interp(np.abs(curvature), turns, limits) ** 2
+        reachable = speed_squared + np.minimum(2 * accel * travel, 2 * brake * travel.T)
+        speeds = np.sqrt(np.min(reachable, axis=1))
+        return float(np.sum(2 * lengths / (speeds + np.roll(speeds, -1))))
+
+    time = estimated_time(offsets)
+    for stage in range(config.time_search_passes):
+        adjustment = 1.5 * 0.5**stage
+        previous_time = time
+        for direction in basis.T:
+            for sign in (-1, 1):
+                trial = np.clip(offsets + sign * adjustment * direction, -width, width)
+                trial_time = estimated_time(trial)
+                if trial_time < time - 1e-9:
+                    offsets, time = trial, trial_time
+        if time < previous_time:
+            yield f"minimum_time_pass_{stage + 1}", offsets
 
 
 def _inside_corridor(points, geometry, usable_width):
@@ -265,23 +318,35 @@ def plan_reference(
         ("half_curvature_candidate", 0.5 * curved),
         ("half_short_path_candidate", 0.5 * short),
     ]
-    best = None
-    center_time = None
-    for name, offsets in candidates:
+
+    def evaluate(name, offsets):
         points = center + normals * offsets[:, None]
         shape = _path_geometry(points)
         if shape is None or not _inside_corridor(points, geometry, usable):
-            continue
+            return None
         lengths, curvature = shape
         if np.max(np.abs(curvature)) > math.tan(MAX_STEERING_RAD) / vehicle.wheelbase_m:
-            continue
+            return None
         speeds, lap_time = _speed_profile(lengths, curvature, vehicle, config)
+        return lap_time, name, points, offsets, curvature, speeds
+
+    best = None
+    center_time = None
+    for name, offsets in candidates:
+        candidate = evaluate(name, offsets)
+        if candidate is None:
+            continue
         if name == "centerline":
-            center_time = lap_time
-        if best is None or lap_time < best[0]:
-            best = lap_time, name, points, offsets, curvature, speeds
+            center_time = candidate[0]
+        if best is None or candidate[0] < best[0]:
+            best = candidate
     if best is None:
         raise ValueError("Ninguna trazada candidata respeta el corredor y el límite de dirección.")
+    if config.time_search_passes:
+        for name, offsets in _time_search(center, normals, usable, best[3], vehicle, config):
+            candidate = evaluate(name, offsets)
+            if candidate is not None and candidate[0] < best[0]:
+                best = candidate
     lap_time, name, points, offsets, curvature, speeds = best
     arrays = [
         np.array(values, dtype=np.float64, copy=True)

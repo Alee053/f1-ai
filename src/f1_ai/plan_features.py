@@ -11,7 +11,49 @@ from f1_ai.racing_line import plan_reference
 PREVIEW_M = np.array([6.0, 15.0, 30.0, 60.0, 100.0])
 
 
-@lru_cache(maxsize=32)
+class CorridorFeatures:
+    """Bordes reales del asfalto muestreados en las estaciones del eje."""
+
+    def __init__(self, road: CircuitGeometry, road_angles: np.ndarray):
+        self.road = road
+        offset = TRACK_WIDTH * np.column_stack((np.cos(road_angles), np.sin(road_angles)))
+        self.edges = np.stack((road.points - offset, road.points + offset), axis=1)
+
+    def observation(self, distance, position, forward, right):
+        road = self.road
+        stations = (distance + PREVIEW_M) % road.length
+        segment = np.searchsorted(road.cumulative, stations, side="right") - 1
+        fraction = (stations - road.cumulative[segment]) / road.lengths[segment]
+        begin = self.edges[segment]
+        end = self.edges[(segment + 1) % len(road.points)]
+        points = begin + (end - begin) * fraction[:, None, None]
+        relative = (points - position) @ np.column_stack((right, forward))
+        return (relative / (PREVIEW_M + TRACK_WIDTH)[:, None, None]).ravel()
+
+
+class ReferenceTimeProgress:
+    """Tiempo acumulado de referencia en estaciones equiespaciadas del eje."""
+
+    def __init__(self, plan):
+        lengths = CircuitGeometry(plan.points).lengths
+        speeds = plan.speed_m_s
+        seconds = 2 * lengths / (speeds + np.roll(speeds, -1))
+        elapsed = np.r_[0, np.cumsum(seconds)]
+        self.fractions = elapsed / elapsed[-1]
+        self.stations = np.linspace(0, 1, len(elapsed))
+
+    def fraction(self, track_fraction):
+        laps, phase = divmod(track_fraction, 1.0)
+        return laps + float(np.interp(phase, self.stations, self.fractions))
+
+    def adjustment(self, start, before, after, length):
+        estimated = self.fraction((start + after) / length) - self.fraction(
+            (start + before) / length
+        )
+        return estimated - (after - before) / length
+
+
+@lru_cache(maxsize=96)
 def track_plan(points_bytes, vehicle, settings):
     points = np.frombuffer(points_bytes, dtype=np.float64).reshape(-1, 2)
     return plan_reference(points, TRACK_WIDTH, vehicle, settings)

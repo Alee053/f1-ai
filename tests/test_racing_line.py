@@ -97,6 +97,18 @@ def test_braking_margin_reduces_entry_speed_before_the_curve():
     assert early[13] == pytest.approx(nominal[13])
 
 
+def test_time_search_preserves_corridor_and_improves_estimate_on_asymmetric_turns():
+    angles = np.linspace(0, 2 * np.pi, 128, endpoint=False)
+    track = np.column_stack((75 * np.cos(angles), 38 * np.sin(angles)))
+    settings = ReferenceConfig(samples=64, optimization_steps=2)
+    baseline = plan_reference(track, 6.0, FormulaConfig(), settings)
+    searched = plan_reference(track, 6.0, FormulaConfig(), replace(settings, time_search_passes=3))
+    assert searched.estimated_lap_seconds <= baseline.estimated_lap_seconds
+    assert np.isfinite(searched.speed_m_s).all()
+    usable = searched.half_width_m - searched.vehicle.width_m / 2 - settings.road_margin_m
+    assert np.max(np.abs(searched.offsets_m)) <= usable
+
+
 @pytest.mark.parametrize(
     "settings",
     [
@@ -107,6 +119,7 @@ def test_braking_margin_reduces_entry_speed_before_the_curve():
         {"grip_fraction": 0},
         {"road_margin_m": -1},
         {"braking_fraction": 1.5},
+        {"time_search_passes": 7},
     ],
 )
 def test_invalid_planning_settings_are_rejected(settings):
