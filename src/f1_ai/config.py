@@ -148,7 +148,9 @@ class PPOConfig:
     sde_sample_freq: int = -1
     squash_output: bool = False
     corner_curriculum: bool = False
+    braking_curriculum: bool = False
     rear_slip_penalty: float = 0.0
+    front_lock_penalty: float = 0.0
 
     def __post_init__(self):
         if not isinstance(self.device, str) or self.device not in {"cpu", "cuda"}:
@@ -191,8 +193,14 @@ class PPOConfig:
             raise ValueError("La salida acotada de esta política requiere use_sde.")
         if type(self.corner_curriculum) is not bool:
             raise ValueError("corner_curriculum debe ser booleano.")
+        if type(self.braking_curriculum) is not bool or (
+            self.braking_curriculum and not self.corner_curriculum
+        ):
+            raise ValueError("braking_curriculum requiere el currículo de curvas.")
         if isinstance(self.rear_slip_penalty, bool) or not 0 <= self.rear_slip_penalty <= 2:
             raise ValueError("rear_slip_penalty debe pertenecer a [0, 2].")
+        if isinstance(self.front_lock_penalty, bool) or not 0 <= self.front_lock_penalty <= 2:
+            raise ValueError("front_lock_penalty debe pertenecer a [0, 2].")
         if (
             type(self.sde_sample_freq) is not int
             or self.sde_sample_freq < -1
@@ -215,11 +223,11 @@ class ExperimentConfig:
             raise ValueError(
                 "El currículo de curvas requiere Formula con mandos directos y trazada."
             )
-        if self.ppo.rear_slip_penalty and (
+        if (self.ppo.rear_slip_penalty or self.ppo.front_lock_penalty) and (
             self.environment.vehicle_model != "formula-v1"
             or self.environment.control_profile != "direct"
         ):
-            raise ValueError("El coste de patinamiento trasero requiere Formula directo.")
+            raise ValueError("Los costes de deslizamiento por eje requieren Formula directo.")
 
 
 def load_config(path: str | Path) -> ExperimentConfig:

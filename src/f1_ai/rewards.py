@@ -22,6 +22,23 @@ class RearSlipPenalty(gym.Wrapper):
         return observation, reward, terminated, truncated, info
 
 
+class FrontLockPenalty(gym.Wrapper):
+    """Penaliza el deslizamiento de frenada y el bloqueo del eje delantero."""
+
+    def __init__(self, env: gym.Env, coefficient: float):
+        super().__init__(env)
+        self.coefficient = coefficient
+
+    def step(self, action):
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        if action[1] < 0 and self.env.unwrapped.road_contact_fraction >= 0.5:
+            slip = -min(info["slip_ratios"][:2])
+            excess = min(1.25, max(0.0, slip - 0.3))
+            locked = any(info["locked_wheels"][:2])
+            reward -= self.coefficient * (excess**2 + 0.35 * locked)
+        return observation, reward, terminated, truncated, info
+
+
 def lap_time_step_reward(
     progress_fraction: float,
     *,

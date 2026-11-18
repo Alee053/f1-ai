@@ -29,7 +29,7 @@ from f1_ai.config import (
 )
 from f1_ai.curriculum import CornerCurriculum
 from f1_ai.environment import CircuitPool, make_env, observation_contract
-from f1_ai.rewards import RearSlipPenalty
+from f1_ai.rewards import FrontLockPenalty, RearSlipPenalty
 from f1_ai.supervision import ActorRehearsal, RehearsalPPO
 
 
@@ -104,10 +104,12 @@ def make_training_envs(config: ExperimentConfig) -> VecEnv:
         env = make_env(config.environment)
         if settings.rear_slip_penalty:
             env = RearSlipPenalty(env, settings.rear_slip_penalty)
+        if settings.front_lock_penalty:
+            env = FrontLockPenalty(env, settings.front_lock_penalty)
         env = CircuitPool(env, config.circuits.train, shuffle=True)
         if settings.corner_curriculum:
             monitored = Monitor(
-                CornerCurriculum(env, settings.n_envs),
+                CornerCurriculum(env, settings.n_envs, braking=settings.braking_curriculum),
                 info_keywords=("training_sector", "curriculum_stage"),
             )
         else:

@@ -12,7 +12,7 @@ from f1_ai.curriculum import CornerCurriculum, CornerStart
 from f1_ai.environment import CircuitPool, make_env, observation_contract
 from f1_ai.imitation import validate_dataset
 from f1_ai.racing_line import ReferenceConfig
-from f1_ai.rewards import RearSlipPenalty, lap_time_step_reward
+from f1_ai.rewards import FrontLockPenalty, RearSlipPenalty, lap_time_step_reward
 from f1_ai.training import load_model, train
 
 
@@ -32,13 +32,14 @@ def test_planned_policy_controls_steering_and_pedal_directly():
         env.close()
 
 
-def test_corner_spawn_keeps_track_and_starts_with_consistent_velocity():
+@pytest.mark.parametrize("braking", [False, True])
+def test_corner_spawn_keeps_track_and_starts_with_consistent_velocity(braking):
     config = load_config("configs/formula-curriculum-cuda.toml")
     env = make_env(config.environment)
     try:
         _, normal = env.reset(seed=7)
         points = env.geometry.points.copy()
-        options = {"corner_start": CornerStart(seed=100, stage=0)}
+        options = {"corner_start": CornerStart(seed=100, stage=0, braking=braking)}
         observation, sector = env.reset(seed=7, options=options)
         assert normal["speed"] == 0.0 < sector["speed"]
         assert sector["position"] != normal["position"]
@@ -137,6 +138,30 @@ def test_training_penalty_only_charges_excess_slip_of_driven_wheels(monkeypatch)
         _, reward, terminated, truncated, result = wrapper.step(action)
         assert reward == pytest.approx(1.0 - 0.6 * 0.7**2)
         assert result is info and not (terminated or truncated)
+    finally:
+        wrapper.close()
+
+
+def test_front_lock_penalty_charges_only_excess_slip_and_front_locks_on_braking(monkeypatch):
+    config = load_config("configs/formula-braking-ppo-cuda.toml")
+    env = make_env(config.environment)
+    wrapper = FrontLockPenalty(env, coefficient=config.ppo.front_lock_penalty)
+    try:
+        observation, _ = wrapper.reset(seed=7)
+        brake = np.array([0.9, -0.24], dtype=np.float32)
+        gas = np.array([0.9, 0.24], dtype=np.float32)
+        info = {"slip_ratios": (-0.15, -0.2, -0.9, 0.0), "locked_wheels": (0, 0, 1, 0)}
+
+        def unchanged_controls(action):
+            assert action is brake or action is gas
+            return observation, 1.0, False, False, info
+
+        monkeypatch.setattr(env, "step", unchanged_controls)
+        assert wrapper.step(brake)[1] == 1.0
+        info["slip_ratios"] = (-0.9, -0.25, 0.0, 0.0)
+        info["locked_wheels"] = (1, 0, 0, 0)
+        assert wrapper.step(brake)[1] == pytest.approx(1.0 - 0.8 * (0.6**2 + 0.35))
+        assert wrapper.step(gas)[1] == 1.0
     finally:
         wrapper.close()
 

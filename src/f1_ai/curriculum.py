@@ -18,6 +18,7 @@ SECTOR_STEPS = 450
 class CornerStart:
     seed: int
     stage: int
+    braking: bool = False
 
     def pose(self, road: CircuitGeometry, plan: RacingPlan) -> tuple[float, float, float, float]:
         rng = np.random.default_rng(self.seed)
@@ -27,8 +28,21 @@ class CornerStart:
             & (curvature >= np.roll(curvature, 1))
             & (curvature >= np.roll(curvature, -1))
         )
-        apex = road.project(plan.centerline[rng.choice(peaks)]).distance
-        center = road.sample(apex - rng.uniform(25.0, 55.0))
+        line = CircuitGeometry(plan.points)
+        speeds = np.r_[plan.speed_m_s, plan.speed_m_s[0]]
+        weights = None
+        lead = (25.0, 55.0)
+        speed_ranges = ((0.88, 1.00), (0.90, 1.08), (0.92, 1.12))
+        if self.braking:
+            entry = (line.cumulative[peaks] - 40.0) % line.length
+            entry_speed = np.interp(entry, line.cumulative, speeds)
+            drops = np.maximum(0.0, entry_speed - plan.speed_m_s[peaks])
+            weights = 1.0 + drops**2
+            weights /= weights.sum()
+            lead = (20.0, 48.0)
+            speed_ranges = ((0.95, 1.02), (0.97, 1.09), (0.98, 1.14))
+        apex = road.project(plan.centerline[rng.choice(peaks, p=weights)]).distance
+        center = road.sample(apex - rng.uniform(*lead))
         direction = road.project(center).tangent
         right = np.array([direction[1], -direction[0]])
         jitter = (0.25, 0.55, 0.70)[self.stage]
@@ -38,21 +52,21 @@ class CornerStart:
             rng.uniform(-heading_jitter_deg, heading_jitter_deg)
         )
 
-        line = CircuitGeometry(plan.points)
         distance = line.project(center).distance
-        reference_speed = np.interp(
-            distance, line.cumulative, np.r_[plan.speed_m_s, plan.speed_m_s[0]]
-        )
-        low, high = ((0.88, 1.00), (0.90, 1.08), (0.92, 1.12))[self.stage]
-        return angle, float(x), float(y), float(reference_speed * rng.uniform(low, high))
+        reference_speed = np.interp(distance, line.cumulative, speeds)
+        speed = float(reference_speed * rng.uniform(*speed_ranges[self.stage]))
+        if self.braking:
+            speed = min(speed, plan.config.speed_limit_m_s)
+        return angle, float(x), float(y), speed
 
 
 class CornerCurriculum(gym.Wrapper):
     """Mezcla sectores y vueltas. Aumenta la dificultad y vuelve a priorizar vueltas."""
 
-    def __init__(self, env: gym.Env, n_envs: int):
+    def __init__(self, env: gym.Env, n_envs: int, *, braking: bool = False):
         super().__init__(env)
         self.n_envs = n_envs
+        self.braking = braking
         self.timesteps = 0
         self.rng = np.random.default_rng(0)
         self.stage = 0
@@ -69,7 +83,7 @@ class CornerCurriculum(gym.Wrapper):
         self.sector = bool(self.rng.random() < SECTOR_PROBABILITY[self.stage])
         self.sector_steps = 0
         if self.sector:
-            start = CornerStart(int(self.rng.integers(2**32)), self.stage)
+            start = CornerStart(int(self.rng.integers(2**32)), self.stage, self.braking)
             options = {**(options or {}), "corner_start": start}
         obs, info = self.env.reset(seed=seed, options=options)
         return obs, {**info, "training_sector": self.sector, "curriculum_stage": self.stage}

@@ -621,6 +621,22 @@ uv run f1-ai --config configs/formula-curriculum-cuda.toml train \
   --initial-model runs/direct-ppo/best_model.zip --output runs/corner-ppo
 ```
 
+`formula-braking-ppo-cuda.toml` prioriza sectores con una caída prevista de
+velocidad antes del ápice. Su coste adicional `front_lock_penalty` se aplica al
+deslizamiento longitudinal delantero durante el frenado y al bloqueo de una
+rueda delantera. Para un primer punto de control de 196.608 pasos:
+
+```bash
+uv run f1-ai --config configs/formula-braking-ppo-cuda.toml train \
+  --initial-model runs/ppo-stable/model.zip --timesteps 196608 \
+  --output runs/braking-pilot
+```
+
+Se puede reanudar desde un checkpoint evaluado con `--resume-model`. El
+presupuesto de la configuración es de 1.998.848 interacciones, alineado con
+los lotes de 2.048 pasos. La evaluación emplea vueltas completas desde la meta
+con la física y observación de la política de mandos directos.
+
 ### Vista de persecución
 
 La cámara `chase` muestra el circuito plano desde atrás con una inclinación de
