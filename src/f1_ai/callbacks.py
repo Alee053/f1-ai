@@ -61,6 +61,14 @@ class DrivingEvaluation(BaseCallback):
         self.logger.record("eval/completion_rate", summary["completion_rate"])
         self.logger.record("eval/mean_coverage", summary["mean_coverage"])
         self.logger.record("eval/mean_reward", summary["mean_return"])
+        if self.config.ppo.corner_curriculum and self.model.ep_info_buffer:
+            recent = self.model.ep_info_buffer
+            self.logger.record(
+                "curriculum/recent_sector_episodes",
+                sum(episode["training_sector"] for episode in recent),
+            )
+            self.logger.record("curriculum/recent_episodes", len(recent))
+            self.logger.record("curriculum/latest_episode_stage", recent[-1]["curriculum_stage"])
         self.logger.dump(self.num_timesteps)
         print(
             f"[evaluation] steps={self.num_timesteps} "

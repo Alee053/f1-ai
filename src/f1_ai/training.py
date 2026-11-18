@@ -27,6 +27,7 @@ from f1_ai.config import (
     ExperimentConfig,
     PPOConfig,
 )
+from f1_ai.curriculum import CornerCurriculum
 from f1_ai.environment import CircuitPool, make_env, observation_contract
 from f1_ai.supervision import ActorRehearsal, RehearsalPPO
 
@@ -99,8 +100,16 @@ def make_training_envs(config: ExperimentConfig) -> VecEnv:
     settings = config.ppo
 
     def training_environment():
+        env = CircuitPool(make_env(config.environment), config.circuits.train, shuffle=True)
+        if settings.corner_curriculum:
+            monitored = Monitor(
+                CornerCurriculum(env, settings.n_envs),
+                info_keywords=("training_sector", "curriculum_stage"),
+            )
+        else:
+            monitored = Monitor(env)
         return TransformReward(
-            Monitor(CircuitPool(make_env(config.environment), config.circuits.train, shuffle=True)),
+            monitored,
             lambda reward: float(reward) * settings.reward_scale,
         )
 
@@ -190,6 +199,8 @@ def train(
             starting_timesteps = model.num_timesteps
             if not 0 < starting_timesteps < settings.total_timesteps:
                 raise ValueError("El presupuesto total debe superar los pasos del checkpoint.")
+            if settings.corner_curriculum:
+                envs.env_method("set_curriculum_timesteps", starting_timesteps)
             metadata["resume"] = {
                 "starting_timesteps": starting_timesteps,
                 "optimizer_restored": True,

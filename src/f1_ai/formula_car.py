@@ -14,7 +14,9 @@ from f1_ai.vehicle import GRAVITY, FormulaConfig, aerodynamic_forces, normal_loa
 
 
 class FormulaCar(Car):
-    def __init__(self, world, init_angle, init_x, init_y, config: FormulaConfig):
+    def __init__(
+        self, world, init_angle, init_x, init_y, config: FormulaConfig, *, initial_speed=0.0
+    ):
         super().__init__(world, init_angle, init_x, init_y)
         self.config = config
         # Se conservan los polígonos visuales, redimensionados a la batalla y ancho elegidos.
@@ -78,7 +80,13 @@ class FormulaCar(Car):
                     upperAngle=0.4,
                 )
             )
-        self._previous_velocity = np.zeros(2)
+        velocity = self.hull.GetWorldVector((0, initial_speed))
+        if initial_speed:
+            self.hull.linearVelocity = velocity
+            for wheel in self.wheels:
+                wheel.linearVelocity = velocity
+                wheel.omega = initial_speed / wheel.wheel_rad
+        self._previous_velocity = np.array(velocity)
         self._acceleration = np.zeros(2)
         self.telemetry = {}
         self.step(0.0)

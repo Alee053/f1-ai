@@ -15,6 +15,7 @@ from f1_ai.config import (
     EnvironmentConfig,
     ReferenceDrivingConfig,
 )
+from f1_ai.curriculum import CornerStart
 from f1_ai.geometry import CircuitGeometry, LapProgress
 from f1_ai.plan_features import PREVIEW_M, PlanFeatures, track_plan
 from f1_ai.rewards import lap_time_step_reward
@@ -111,6 +112,7 @@ class NumericCarRacing(CarRacing):
         self.action_space = spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32)
         self.geometry: CircuitGeometry | None = None
         self._plan_features: PlanFeatures | None = None
+        self._corner_start: CornerStart | None = None
         self.progress: LapProgress | None = None
         self.elapsed_steps = 0
         self.off_track_steps = 0
@@ -125,13 +127,22 @@ class NumericCarRacing(CarRacing):
             return self._observation()
         return super()._render(mode)
 
-    def _observation(self) -> np.ndarray:
-        assert self.car is not None
+    def _road_geometry(self) -> CircuitGeometry:
         if self.geometry is None:
             self.geometry = CircuitGeometry(np.array([tile[2:4] for tile in self.track]))
+        return self.geometry
+
+    def _track_plan(self, reference: ReferenceDrivingConfig):
+        return track_plan(
+            self._road_geometry().points.tobytes(), self.config.formula, reference.plan
+        )
+
+    def _observation(self) -> np.ndarray:
+        assert self.car is not None
+        geometry = self._road_geometry()
         hull = self.car.hull
         position = np.array(hull.position)
-        projection = self.geometry.project(position)
+        projection = geometry.project(position)
         forward = np.array(hull.GetWorldVector((0, 1)))
         right = np.array(hull.GetWorldVector((1, 0)))
         velocity = np.array(hull.linearVelocity)
@@ -141,15 +152,14 @@ class NumericCarRacing(CarRacing):
         if planned:
             if self._plan_features is None:
                 reference = self.config.racing_reference or ReferenceDrivingConfig()
-                plan = track_plan(
-                    self.geometry.points.tobytes(), self.config.formula, reference.plan
+                self._plan_features = PlanFeatures(
+                    self._track_plan(reference), reference.follower.lookahead_seconds
                 )
-                self._plan_features = PlanFeatures(plan, reference.follower.lookahead_seconds)
             waypoints = self._plan_features.observation(
                 position, forward, right, float(velocity @ forward)
             )
         else:
-            future = self.geometry.sample(projection.distance + lookahead) - position
+            future = geometry.sample(projection.distance + lookahead) - position
             scale = lookahead[:, None] if racing else WAYPOINT_SCALE
             waypoints = (np.column_stack((future @ right, future @ forward)) / scale).ravel()
         extra = []
@@ -185,6 +195,13 @@ class NumericCarRacing(CarRacing):
         return sum(bool(wheel.tiles) for wheel in self.car.wheels) / len(self.car.wheels)
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
+        start = (options or {}).get("corner_start")
+        if start is not None and (
+            not isinstance(start, CornerStart)
+            or self.config.observation_profile != PLANNED_OBSERVATION
+            or self.config.control_profile != "direct"
+        ):
+            raise ValueError("La salida de sector requiere el currículo de Formula directo.")
         self.geometry = None
         self._plan_features = None
         self.progress = None
@@ -194,7 +211,11 @@ class NumericCarRacing(CarRacing):
         self._consecutive_off_track = 0
         self._episode_done = False
         self.previous_action = np.zeros(2, dtype=np.float32)
-        observation, _ = super().reset(seed=seed, options=options)
+        self._corner_start = start
+        try:
+            observation, _ = super().reset(seed=seed, options=options)
+        finally:
+            self._corner_start = None
         assert self.geometry is not None and self.car is not None
         start = self.geometry.project(np.array(self.car.hull.position)).distance
         self.progress = LapProgress(self.geometry.length, start, self.config.minimum_coverage)
@@ -209,8 +230,17 @@ class NumericCarRacing(CarRacing):
 
                 assert self.car is not None and self.config.formula is not None
                 if not isinstance(self.car, FormulaCar):
+                    angle, x, y = self.track[0][1:4]
+                    speed = 0.0
+                    if self._corner_start is not None:
+                        reference = self.config.racing_reference or ReferenceDrivingConfig()
+                        angle, x, y, speed = self._corner_start.pose(
+                            self._road_geometry(), self._track_plan(reference)
+                        )
                     self.car.destroy()
-                    self.car = FormulaCar(self.world, *self.track[0][1:4], self.config.formula)
+                    self.car = FormulaCar(
+                        self.world, angle, x, y, self.config.formula, initial_speed=speed
+                    )
             return super().step(None)
         if self.progress is None or self._episode_done:
             raise gym.error.ResetNeeded("Se debe llamar a reset antes del siguiente episodio.")

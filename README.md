@@ -600,6 +600,23 @@ uv run f1-ai --config configs/formula-direct-cuda.toml train \
   --initial-model runs/direct-bc/best_model.zip --output runs/direct-ppo
 ```
 
+### Currículo de curvas
+
+`formula-curriculum-cuda.toml` parte de un checkpoint de mandos directos y sube
+`log_std_init` de -5 a -4,4. Durante el entrenamiento mezcla vueltas completas
+con sectores de hasta 120 m o 9 s. Los sectores empiezan de 25 a 55 m antes de
+una curva, con velocidad inicial basada en el perfil de la trazada.
+
+La probabilidad de iniciar un sector baja del 70 % al 55 % a los 32.768 pasos
+y al 25 % a los 81.920. En esas transiciones aumenta la variación de velocidad
+y orientación. La validación usa vueltas completas desde la meta. El fin de un
+sector solo trunca el episodio.
+
+```bash
+uv run f1-ai --config configs/formula-curriculum-cuda.toml train \
+  --initial-model runs/direct-ppo/best_model.zip --output runs/corner-ppo
+```
+
 ### Vista de persecución
 
 La cámara `chase` muestra el circuito plano desde atrás con una inclinación de

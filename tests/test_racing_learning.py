@@ -8,7 +8,8 @@ from gymnasium.utils.env_checker import check_env
 
 from f1_ai import imitation
 from f1_ai.config import load_config
-from f1_ai.environment import make_env, observation_contract
+from f1_ai.curriculum import CornerCurriculum, CornerStart
+from f1_ai.environment import CircuitPool, make_env, observation_contract
 from f1_ai.imitation import validate_dataset
 from f1_ai.racing_line import ReferenceConfig
 from f1_ai.rewards import lap_time_step_reward
@@ -27,6 +28,47 @@ def test_planned_policy_controls_steering_and_pedal_directly():
         observation, _, _, _, _ = env.step(action)
         np.testing.assert_array_equal(env.previous_action, action)
         assert env.observation_space.contains(observation) and env.elapsed_steps == 1
+    finally:
+        env.close()
+
+
+def test_corner_spawn_keeps_track_and_starts_with_consistent_velocity():
+    config = load_config("configs/formula-curriculum-cuda.toml")
+    env = make_env(config.environment)
+    try:
+        _, normal = env.reset(seed=7)
+        points = env.geometry.points.copy()
+        options = {"corner_start": CornerStart(seed=100, stage=0)}
+        observation, sector = env.reset(seed=7, options=options)
+        assert normal["speed"] == 0.0 < sector["speed"]
+        assert sector["position"] != normal["position"]
+        assert sector["simulated_seconds"] == sector["forward_progress"] == 0.0
+        assert env.road_contact_fraction == 1.0 and sector["off_track_steps"] == 0
+        assert max(abs(value) for value in sector["slip_ratios"]) < 1e-5
+        np.testing.assert_array_equal(env.geometry.points, points)
+        repeated, _ = env.reset(seed=7, options=options)
+        np.testing.assert_array_equal(repeated, observation)
+        np.testing.assert_array_equal(env.reset(seed=7)[1]["position"], normal["position"])
+    finally:
+        env.close()
+
+
+def test_corner_curriculum_truncates_practice_without_crediting_a_lap():
+    config = load_config("configs/formula-curriculum-cuda.toml")
+    env = CornerCurriculum(CircuitPool(make_env(config.environment), (7,), shuffle=True), 4)
+    try:
+        _, info = env.reset(seed=42)
+        assert info["training_sector"] and info["curriculum_stage"] == 0
+        assert info["circuit_seed"] == 7
+        for _ in range(450):
+            _, _, terminated, truncated, info = env.step(np.array([0, -0.6], dtype=np.float32))
+            if terminated or truncated:
+                break
+        assert truncated and not terminated and not info["lap_complete"]
+        assert info["termination_reason"] == "sector_limit"
+        assert info["simulated_seconds"] == 9.0
+        env.set_curriculum_timesteps(81_920)
+        assert env.reset(seed=42)[1]["curriculum_stage"] == 2
     finally:
         env.close()
 

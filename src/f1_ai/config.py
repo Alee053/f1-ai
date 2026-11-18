@@ -147,6 +147,7 @@ class PPOConfig:
     use_sde: bool = False
     sde_sample_freq: int = -1
     squash_output: bool = False
+    corner_curriculum: bool = False
 
     def __post_init__(self):
         if not isinstance(self.device, str) or self.device not in {"cpu", "cuda"}:
@@ -187,6 +188,8 @@ class PPOConfig:
             raise ValueError("use_sde y squash_output deben ser booleanos.")
         if self.squash_output and not self.use_sde:
             raise ValueError("La salida acotada de esta política requiere use_sde.")
+        if type(self.corner_curriculum) is not bool:
+            raise ValueError("corner_curriculum debe ser booleano.")
         if (
             type(self.sde_sample_freq) is not int
             or self.sde_sample_freq < -1
@@ -200,6 +203,15 @@ class ExperimentConfig:
     environment: EnvironmentConfig
     circuits: CircuitSplit
     ppo: PPOConfig
+
+    def __post_init__(self):
+        if self.ppo.corner_curriculum and (
+            self.environment.observation_profile != PLANNED_OBSERVATION
+            or self.environment.control_profile != "direct"
+        ):
+            raise ValueError(
+                "El currículo de curvas requiere Formula con mandos directos y trazada."
+            )
 
 
 def load_config(path: str | Path) -> ExperimentConfig:
