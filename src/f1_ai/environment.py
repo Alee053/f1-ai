@@ -11,9 +11,11 @@ from gymnasium.envs.box2d.car_racing import FPS, PLAYFIELD, TRACK_WIDTH, CarRaci
 from f1_ai.config import (
     CORRIDOR_OBSERVATION,
     LAP_TIME_REWARDS,
+    MAP_OBSERVATIONS,
     PLANNED_OBSERVATION,
     RACING_RESIDUAL,
     REFERENCE_OBSERVATIONS,
+    ROAD_OBSERVATION,
     EnvironmentConfig,
     ReferenceDrivingConfig,
 )
@@ -58,9 +60,12 @@ RACING_OBSERVATION_NAMES = (
 )
 
 
-PLANNED_OBSERVATION_NAMES = (
+VEHICLE_OBSERVATION_NAMES = (
     *RACING_OBSERVATION_NAMES[:8],
     *RACING_OBSERVATION_NAMES[-10:-2],
+)
+PLANNED_OBSERVATION_NAMES = (
+    *VEHICLE_OBSERVATION_NAMES,
     "raceline_error",
     "target_speed_error",
     "profile_acceleration",
@@ -73,18 +78,19 @@ PLANNED_OBSERVATION_NAMES = (
     ),
 )
 
-CORRIDOR_OBSERVATION_NAMES = (
-    *PLANNED_OBSERVATION_NAMES,
-    *(
-        f"road_{side}_{int(distance)}_{axis}"
-        for distance in PREVIEW_M
-        for side in ("left", "right")
-        for axis in ("right", "forward")
-    ),
+ROAD_EDGE_NAMES = tuple(
+    f"road_{side}_{int(distance)}_{axis}"
+    for distance in PREVIEW_M
+    for side in ("left", "right")
+    for axis in ("right", "forward")
 )
+CORRIDOR_OBSERVATION_NAMES = (*PLANNED_OBSERVATION_NAMES, *ROAD_EDGE_NAMES)
+ROAD_OBSERVATION_NAMES = (*VEHICLE_OBSERVATION_NAMES, *ROAD_EDGE_NAMES)
 
 
 def _direct_observation_contract(config: EnvironmentConfig) -> tuple[int, tuple[str, ...]]:
+    if config.observation_profile == ROAD_OBSERVATION:
+        return 6, ROAD_OBSERVATION_NAMES
     if config.observation_profile == CORRIDOR_OBSERVATION:
         return 5, CORRIDOR_OBSERVATION_NAMES
     if config.observation_profile == PLANNED_OBSERVATION:
@@ -161,8 +167,10 @@ class NumericCarRacing(CarRacing):
         forward = np.array(hull.GetWorldVector((0, 1)))
         right = np.array(hull.GetWorldVector((1, 0)))
         velocity = np.array(hull.linearVelocity)
-        planned = self.config.observation_profile in REFERENCE_OBSERVATIONS
-        racing = self.config.observation_profile != "legacy"
+        profile = self.config.observation_profile
+        planned = profile in REFERENCE_OBSERVATIONS
+        road_only = profile == ROAD_OBSERVATION
+        racing = profile != "legacy"
         lookahead = RACING_LOOKAHEAD_METERS if racing else LOOKAHEAD_METERS
         if planned:
             if self._plan_features is None:
@@ -173,6 +181,8 @@ class NumericCarRacing(CarRacing):
             waypoints = self._plan_features.observation(
                 position, forward, right, float(velocity @ forward)
             )
+        elif road_only:
+            waypoints = ()
         else:
             future = geometry.sample(projection.distance + lookahead) - position
             scale = lookahead[:, None] if racing else WAYPOINT_SCALE
@@ -183,10 +193,10 @@ class NumericCarRacing(CarRacing):
                 *(np.array(self.car.telemetry["slip_ratios"]) / 2.0),
                 *self.car.telemetry["locked_wheels"],
             ]
-            if not planned:
+            if not (planned or road_only):
                 extra.extend(self.previous_action)
         corridor = ()
-        if self.config.observation_profile == CORRIDOR_OBSERVATION:
+        if profile in {CORRIDOR_OBSERVATION, ROAD_OBSERVATION}:
             if self._corridor_features is None:
                 angles = np.array([tile[1] for tile in self.track])
                 self._corridor_features = CorridorFeatures(geometry, angles)
@@ -222,7 +232,7 @@ class NumericCarRacing(CarRacing):
         start = (options or {}).get("corner_start")
         if start is not None and (
             not isinstance(start, CornerStart)
-            or self.config.observation_profile not in REFERENCE_OBSERVATIONS
+            or self.config.observation_profile not in MAP_OBSERVATIONS
             or self.config.control_profile != "direct"
         ):
             raise ValueError("La salida de sector requiere el currículo de Formula directo.")

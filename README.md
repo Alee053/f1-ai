@@ -628,6 +628,11 @@ distribuye el premio de avance según el tiempo de referencia por sector. El
 total de avance en una vuelta completa se conserva y la evaluación usa el
 mismo perfil `lap-time-v1`.
 
+El perfil `road-v5` usa 36 mediciones del vehículo y de los bordes. Omite las
+coordenadas de la trazada calculada, su velocidad objetivo y su curvatura.
+La imitación puede leer demostraciones de `corridor-v4` del mismo entorno.
+El cargador conserva solo las columnas que utiliza este perfil.
+
 ### Currículo de curvas
 
 `formula-curriculum-cuda.toml` parte de un checkpoint de mandos directos y sube

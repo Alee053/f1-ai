@@ -70,6 +70,32 @@ def test_corridor_preserves_old_inputs_and_transfers_initial_policy(tmp_path):
         new_env.close()
 
 
+def test_road_policy_reuses_demonstrations_without_observing_the_reference(tmp_path):
+    corridor = load_config("configs/formula-corridor-cuda.toml")
+    road = replace(
+        corridor, environment=replace(corridor.environment, observation_profile="road-v5")
+    )
+    corridor_env = make_env(corridor.environment)
+    road_env = make_env(road.environment)
+    try:
+        full, _ = corridor_env.reset(seed=7)
+        only_road, _ = road_env.reset(seed=7)
+        assert only_road.shape == (36,)
+        assert road_env._plan_features is None
+        np.savez(
+            tmp_path / "dataset.npz",
+            observations=full[None],
+            actions=np.zeros((1, 2), dtype=np.float32),
+            seeds=np.array([7]),
+        )
+        write_json(tmp_path / "metadata.json", provenance(corridor, kind="demonstrations"))
+        dataset = imitation.load_dataset(tmp_path, road)
+        np.testing.assert_array_equal(only_road, dataset["observations"][0])
+    finally:
+        corridor_env.close()
+        road_env.close()
+
+
 @pytest.mark.parametrize(("braking", "recovery"), [(False, False), (True, False), (True, True)])
 def test_corner_spawn_keeps_track_and_starts_with_consistent_velocity(braking, recovery):
     config = load_config("configs/formula-curriculum-cuda.toml")

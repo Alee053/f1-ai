@@ -6,7 +6,7 @@ guardado utiliza exclusivamente la red neuronal. Esta etapa no se llama PPO.
 
 import json
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import numpy as np
@@ -16,8 +16,10 @@ from stable_baselines3 import PPO
 from f1_ai.agents import PPOAgent, PursuitAgent
 from f1_ai.artifacts import create_directory, provenance, write_json
 from f1_ai.config import (
+    CORRIDOR_OBSERVATION,
     LAP_TIME_REWARDS,
     RACING_RESIDUAL,
+    ROAD_OBSERVATION,
     EnvironmentConfig,
     ExperimentConfig,
     ReferenceDrivingConfig,
@@ -145,13 +147,30 @@ def load_dataset(directory: Path, config: ExperimentConfig) -> dict[str, np.ndar
     with (directory / "metadata.json").open() as stream:
         metadata = json.load(stream)
     recorded = EnvironmentConfig(**metadata["configuration"]["environment"])
-    if metadata["observation_version"] != observation_contract(config.environment)[0]:
+    remove_reference = (
+        config.environment.observation_profile == ROAD_OBSERVATION
+        and recorded.observation_profile == CORRIDOR_OBSERVATION
+    )
+    source = (
+        replace(
+            config,
+            environment=replace(config.environment, observation_profile=CORRIDOR_OBSERVATION),
+        )
+        if remove_reference
+        else config
+    )
+    version, source_names = observation_contract(source.environment)
+    if metadata["observation_version"] != version:
         raise ValueError("La versión de observaciones del dataset no coincide.")
-    if recorded != config.environment:
+    if recorded != source.environment:
         raise ValueError("El entorno de las demostraciones no coincide con la configuración.")
     with np.load(directory / "dataset.npz", allow_pickle=False) as archive:
         data = {key: archive[key] for key in ("observations", "actions", "seeds")}
-    validate_dataset(data, config)
+    validate_dataset(data, source)
+    if remove_reference:
+        _, names = observation_contract(config.environment)
+        data["observations"] = data["observations"][:, [source_names.index(name) for name in names]]
+        validate_dataset(data, config)
     return data
 
 
