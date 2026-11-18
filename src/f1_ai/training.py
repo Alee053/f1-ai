@@ -113,8 +113,13 @@ def make_training_envs(config: ExperimentConfig) -> VecEnv:
         env = CircuitPool(env, config.circuits.train, shuffle=True)
         info_keywords = ()
         if settings.corner_curriculum:
-            env = CornerCurriculum(env, settings.n_envs, braking=settings.braking_curriculum)
-            info_keywords = ("training_sector", "curriculum_stage")
+            env = CornerCurriculum(
+                env,
+                settings.n_envs,
+                braking=settings.braking_curriculum,
+                recovery=settings.recovery_curriculum,
+            )
+            info_keywords = ("training_sector", "curriculum_stage", "training_recovery")
         return TransformReward(
             Monitor(env, info_keywords=info_keywords),
             lambda reward: float(reward) * settings.reward_scale,

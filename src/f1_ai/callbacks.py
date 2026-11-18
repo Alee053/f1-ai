@@ -69,6 +69,11 @@ class DrivingEvaluation(BaseCallback):
             )
             self.logger.record("curriculum/recent_episodes", len(recent))
             self.logger.record("curriculum/latest_episode_stage", recent[-1]["curriculum_stage"])
+            if self.config.ppo.recovery_curriculum:
+                self.logger.record(
+                    "curriculum/recent_recovery_episodes",
+                    sum(episode["training_recovery"] for episode in recent),
+                )
         self.logger.dump(self.num_timesteps)
         print(
             f"[evaluation] steps={self.num_timesteps} "

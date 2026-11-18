@@ -640,6 +640,12 @@ y al 25 % a los 81.920. En esas transiciones aumenta la variación de velocidad
 y orientación. La validación usa vueltas completas desde la meta. El fin de un
 sector solo trunca el episodio.
 
+`recovery_curriculum = true` en `[ppo]` aumenta la variedad de entradas en
+la segunda y tercera etapa. La mitad de los sectores de esas etapas pueden
+empezar a 14–38 m del ápice, con desplazamientos de hasta 2 m y orientación
+de hasta 10 grados respecto al eje de pista. El registro de entrenamiento
+distingue esos episodios.
+
 El ajuste opcional `rear_slip_penalty` en `[ppo]` añade un coste al superar
 0,30 de deslizamiento longitudinal en una rueda trasera sobre el asfalto.
 La política conserva el giro y el pedal que haya elegido.

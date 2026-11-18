@@ -70,14 +70,16 @@ def test_corridor_preserves_old_inputs_and_transfers_initial_policy(tmp_path):
         new_env.close()
 
 
-@pytest.mark.parametrize("braking", [False, True])
-def test_corner_spawn_keeps_track_and_starts_with_consistent_velocity(braking):
+@pytest.mark.parametrize(("braking", "recovery"), [(False, False), (True, False), (True, True)])
+def test_corner_spawn_keeps_track_and_starts_with_consistent_velocity(braking, recovery):
     config = load_config("configs/formula-curriculum-cuda.toml")
     env = make_env(config.environment)
     try:
         _, normal = env.reset(seed=7)
         points = env.geometry.points.copy()
-        options = {"corner_start": CornerStart(seed=100, stage=0, braking=braking)}
+        options = {
+            "corner_start": CornerStart(seed=100, stage=0, braking=braking, recovery=recovery)
+        }
         observation, sector = env.reset(seed=7, options=options)
         assert normal["speed"] == 0.0 < sector["speed"]
         assert sector["position"] != normal["position"]

@@ -151,6 +151,7 @@ class PPOConfig:
     squash_output: bool = False
     corner_curriculum: bool = False
     braking_curriculum: bool = False
+    recovery_curriculum: bool = False
     rear_slip_penalty: float = 0.0
     front_lock_penalty: float = 0.0
     time_progress_mix: float = 0.0
@@ -200,6 +201,10 @@ class PPOConfig:
             self.braking_curriculum and not self.corner_curriculum
         ):
             raise ValueError("braking_curriculum requiere el currículo de curvas.")
+        if type(self.recovery_curriculum) is not bool or (
+            self.recovery_curriculum and not self.corner_curriculum
+        ):
+            raise ValueError("recovery_curriculum requiere el currículo de curvas.")
         if isinstance(self.rear_slip_penalty, bool) or not 0 <= self.rear_slip_penalty <= 2:
             raise ValueError("rear_slip_penalty debe pertenecer a [0, 2].")
         if isinstance(self.front_lock_penalty, bool) or not 0 <= self.front_lock_penalty <= 2:

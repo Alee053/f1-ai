@@ -19,6 +19,7 @@ class CornerStart:
     seed: int
     stage: int
     braking: bool = False
+    recovery: bool = False
 
     def pose(self, road: CircuitGeometry, plan: RacingPlan) -> tuple[float, float, float, float]:
         rng = np.random.default_rng(self.seed)
@@ -41,13 +42,19 @@ class CornerStart:
             weights /= weights.sum()
             lead = (20.0, 48.0)
             speed_ranges = ((0.95, 1.02), (0.97, 1.09), (0.98, 1.14))
+        if self.recovery:
+            lead = (14.0, 38.0)
         apex = road.project(plan.centerline[rng.choice(peaks, p=weights)]).distance
         center = road.sample(apex - rng.uniform(*lead))
         direction = road.project(center).tangent
         right = np.array([direction[1], -direction[0]])
         jitter = (0.25, 0.55, 0.70)[self.stage]
+        if self.recovery:
+            jitter = 2.0
         x, y = center + rng.uniform(-jitter, jitter) * right
         heading_jitter_deg = (2.0, 3.5, 4.0)[self.stage]
+        if self.recovery:
+            heading_jitter_deg = 10.0
         angle = math.atan2(-direction[0], direction[1]) + math.radians(
             rng.uniform(-heading_jitter_deg, heading_jitter_deg)
         )
@@ -63,15 +70,17 @@ class CornerStart:
 class CornerCurriculum(gym.Wrapper):
     """Mezcla sectores y vueltas. Aumenta la dificultad y vuelve a priorizar vueltas."""
 
-    def __init__(self, env: gym.Env, n_envs: int, *, braking: bool = False):
+    def __init__(self, env: gym.Env, n_envs: int, *, braking: bool = False, recovery: bool = False):
         super().__init__(env)
         self.n_envs = n_envs
         self.braking = braking
+        self.recovery = recovery
         self.timesteps = 0
         self.rng = np.random.default_rng(0)
         self.stage = 0
         self.sector = False
         self.sector_steps = 0
+        self.recovery_start = False
 
     def set_curriculum_timesteps(self, timesteps: int):
         self.timesteps = timesteps
@@ -81,12 +90,25 @@ class CornerCurriculum(gym.Wrapper):
             self.rng = np.random.default_rng(np.random.SeedSequence([seed, 159]))
         self.stage = 2 if self.timesteps >= 81_920 else int(self.timesteps >= 32_768)
         self.sector = bool(self.rng.random() < SECTOR_PROBABILITY[self.stage])
+        self.recovery_start = bool(
+            self.sector and self.recovery and self.stage > 0 and self.rng.random() < 0.5
+        )
         self.sector_steps = 0
         if self.sector:
-            start = CornerStart(int(self.rng.integers(2**32)), self.stage, self.braking)
+            start = CornerStart(
+                int(self.rng.integers(2**32)), self.stage, self.braking, self.recovery_start
+            )
             options = {**(options or {}), "corner_start": start}
         obs, info = self.env.reset(seed=seed, options=options)
-        return obs, {**info, "training_sector": self.sector, "curriculum_stage": self.stage}
+        return obs, self._episode_info(info)
+
+    def _episode_info(self, info):
+        return {
+            **info,
+            "training_sector": self.sector,
+            "curriculum_stage": self.stage,
+            "training_recovery": self.recovery_start,
+        }
 
     def step(self, action):
         observation, reward, terminated, truncated, info = self.env.step(action)
@@ -103,5 +125,5 @@ class CornerCurriculum(gym.Wrapper):
             reward,
             terminated,
             truncated,
-            {**info, "training_sector": self.sector, "curriculum_stage": self.stage},
+            self._episode_info(info),
         )
