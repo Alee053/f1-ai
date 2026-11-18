@@ -674,6 +674,62 @@ coordenadas de la trazada calculada, su velocidad objetivo y su curvatura.
 La imitación puede leer demostraciones de `corridor-v4` del mismo entorno.
 El cargador conserva solo las columnas que utiliza este perfil.
 
+### Comparación con sensores de pista
+
+`configs/formula-road-cuda.toml` usa la física calibrada de
+`formula-wide-entry-cuda.toml`. La red recibe 36 observaciones y entrega el
+giro y el pedal. La recompensa `lap-time-v1` premia el avance y cobra por
+tiempo, deslizamiento excesivo y maniobras bruscas. La red elige por dónde
+pasar dentro del corredor.
+
+Para preparar un alumno, se usa un checkpoint compatible de `corridor-v4`
+con su `metadata.json`. El maestro ve la trazada durante la recolección.
+El dataset conserva los mandos del maestro y las observaciones de
+`road-v5` en circuitos de entrenamiento. En DAgger, el alumno también
+conduce y el maestro etiqueta los estados que visita.
+
+```bash
+config=configs/formula-road-cuda.toml
+teacher=runs/teacher/model.zip
+uv run f1-ai --config "$config" demonstrations --teacher ppo --teacher-model "$teacher" \
+  --output runs/road-demonstrations
+uv run f1-ai --config "$config" clone --dataset runs/road-demonstrations \
+  --teacher-model "$teacher" --dagger-rounds 1 --epochs 24 --learning-rate 0.0005 \
+  --output runs/road-clone
+uv run f1-ai --config "$config" train --initial-model runs/road-clone/best_model.zip \
+  --rehearsal-dataset runs/road-demonstrations --rehearsal-fade-steps 16384 \
+  --output runs/road-ppo-distilled
+uv run f1-ai --config "$config" train --output runs/road-ppo-cold
+```
+
+El repaso reduce su tasa de aprendizaje de forma lineal hasta la cantidad de
+pasos indicada. A partir de ese punto solo se actualiza con PPO. El actor
+usa `road-v5` desde el inicio del entrenamiento y durante toda la evaluación.
+Al comparar presupuestos, se cuentan por separado las demostraciones,
+las interacciones de DAgger y las de PPO.
+
+NEAT reutiliza el entorno de entrenamiento y su recompensa descontada.
+El preset evalúa 16 genomas por generación durante 512 pasos cada uno.
+Todos los genomas de una generación comienzan con la misma secuencia de
+circuitos de entrenamiento. Si un episodio termina, se inicia otro hasta
+agotar los pasos asignados al genoma. El campeón de cada generación pasa
+a validación, donde se priorizan las vueltas limpias y su tiempo.
+El presupuesto debe ser múltiplo de los pasos de una generación.
+[NEAT-Python 2.0](https://pypi.org/project/neat-python/2.0.0/)
+
+```bash
+uv run --extra neat f1-ai --config "$config" train-neat --output runs/road-neat
+uv run --extra neat f1-ai --config "$config" evaluate --agents neat \
+  --model runs/road-neat/best_model.json --split validation --output runs/road-neat-validation
+uv run f1-ai --config "$config" evaluate --agents bc-ppo \
+  --model runs/road-ppo-distilled/best_model.zip --split validation \
+  --output runs/road-ppo-distilled-validation
+```
+
+Comparar con las mismas semillas de validación. Registrar cobertura y
+salidas si todavía no hay vueltas completas. Las semillas 200 a 204 se
+reservan para la prueba final.
+
 ### Currículo de curvas
 
 `formula-curriculum-cuda.toml` parte de un checkpoint de mandos directos y sube

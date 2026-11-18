@@ -24,11 +24,11 @@ def parser() -> argparse.ArgumentParser:
     benchmark = commands.add_parser("benchmark", help="Medir pasos físicos sin renderizado")
     benchmark.add_argument("--steps", type=int, default=2000)
     benchmark.add_argument("--output", type=Path, required=True)
-    evaluate = commands.add_parser("evaluate", help="Evaluar referencias o un modelo PPO")
+    evaluate = commands.add_parser("evaluate", help="Evaluar referencias o una política guardada")
     evaluate.add_argument(
         "--agents",
         nargs="+",
-        choices=["random", "pursuit", "reference", "ppo", "bc", "bc-ppo"],
+        choices=["random", "pursuit", "reference", "ppo", "bc", "bc-ppo", "neat"],
         default=["random", "pursuit"],
     )
     evaluate.add_argument("--split", choices=["train", "validation", "test"], default="validation")
@@ -39,7 +39,7 @@ def parser() -> argparse.ArgumentParser:
         "--min-completion", type=float, help="Exigir una tasa mínima a cada agente"
     )
     evaluate.add_argument(
-        "--model", type=Path, help="Checkpoint local de confianza con metadata.json"
+        "--model", type=Path, help="Checkpoint PPO local de confianza o política NEAT JSON"
     )
     training = commands.add_parser("train", help="Entrenar PPO o ejecutar una prueba de 512 pasos")
     training.add_argument("--smoke", action="store_true", help="Prueba de integración de 512 pasos")
@@ -66,6 +66,14 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Permitir cambios en la física Formula v1 al usar --initial-model",
     )
+    evolution = commands.add_parser(
+        "train-neat", help="Evolucionar una política de mandos directos"
+    )
+    evolution.add_argument("--output", type=Path, required=True)
+    evolution.add_argument("--seed", type=int)
+    evolution.add_argument("--timesteps", type=int)
+    evolution.add_argument("--rollout-steps", type=int, default=512)
+    evolution.add_argument("--neat-config", type=Path, default=Path("configs/neat-road.ini"))
     plot = commands.add_parser("plot", help="Exportar figuras de una evaluación existente")
     plot.add_argument("--evaluation", type=Path, required=True)
     training_plot = commands.add_parser(
@@ -192,15 +200,21 @@ def run_evaluate(config, args):
         raise ValueError("El agente reference requiere el perfil de control racing-residual-v1.")
     if args.min_completion is not None and not 0 <= args.min_completion <= 1:
         raise ValueError("La finalización mínima debe pertenecer a [0, 1].")
-    learned = set(args.agents) & {"ppo", "bc", "bc-ppo"}
+    learned = set(args.agents) & {"ppo", "bc", "bc-ppo", "neat"}
     if len(learned) > 1:
         raise ValueError("Un checkpoint solo puede evaluarse bajo una etiqueta de método.")
     if learned and args.model is None:
         raise ValueError("La evaluación de la red requiere --model.")
     if args.model is not None and not learned:
         raise ValueError("Se indicó un modelo sin incluir una red en --agents.")
-    model = None
-    if args.model is not None:
+    agent = None
+    device = None
+    if "neat" in learned:
+        from f1_ai.evolution import load_neat_agent
+
+        agent = load_neat_agent(args.model, config)
+        device = "cpu"
+    elif args.model is not None:
         from f1_ai.training import load_model, read_model_metadata
 
         model_metadata = read_model_metadata(args.model)
@@ -213,6 +227,8 @@ def run_evaluate(config, args):
         if "ppo" in learned and (imitated or root in {"behavior_cloning", "dagger"}):
             raise ValueError("El checkpoint incluye imitación: use bc o bc-ppo para identificarlo.")
         model = load_model(args.model, config)
+        agent = PPOAgent(model)
+        device = str(model.device)
     output = create_directory(args.output)
     factories = {}
     for name in args.agents:
@@ -226,8 +242,8 @@ def run_evaluate(config, args):
                 args.reference_lateral_acceleration,
                 environment=config.environment,
             )
-        elif name in learned:
-            factories[name] = lambda seed: PPOAgent(model)
+        elif agent is not None and name in learned:
+            factories[name] = lambda seed: agent
     write_json(
         output / "metadata.json",
         {
@@ -242,7 +258,7 @@ def run_evaluate(config, args):
             "model_sha256": hashlib.sha256(args.model.read_bytes()).hexdigest()
             if args.model is not None
             else None,
-            "inference_device": str(model.device) if model is not None else None,
+            "inference_device": device,
         },
     )
     results = evaluate_agents(
@@ -270,16 +286,17 @@ def main():
 
             print(json.dumps(connected_controllers(), indent=2))
             return
-        config_path = args.config or Path(
-            "configs/formula.toml"
-            if args.command in {"play", "plan-reference", "reference"}
-            else "configs/ppo.toml"
-        )
+        default_config = "configs/ppo.toml"
+        if args.command in {"play", "plan-reference", "reference"}:
+            default_config = "configs/formula.toml"
+        elif args.command == "train-neat":
+            default_config = "configs/formula-road-cuda.toml"
+        config_path = args.config or Path(default_config)
         config = load_config(config_path)
-        if args.command in {"train", "clone"} and getattr(args, "seed", None) is not None:
+        if args.command in {"train", "train-neat", "clone"} and args.seed is not None:
             config = replace(config, ppo=replace(config.ppo, seed=args.seed))
         if getattr(args, "timesteps", None) is not None:
-            if args.smoke:
+            if getattr(args, "smoke", False):
                 raise ValueError("La prueba smoke fija su propio número de pasos.")
             config = replace(config, ppo=replace(config.ppo, total_timesteps=args.timesteps))
         if getattr(args, "rehearsal_fade_steps", None) is not None:
@@ -360,6 +377,13 @@ def main():
                         indent=2,
                     )
                 )
+            case "train-neat":
+                from f1_ai.evolution import train_neat
+
+                result = train_neat(
+                    config, args.output, args.neat_config, rollout_steps=args.rollout_steps
+                )
+                print(json.dumps(result, indent=2, allow_nan=False))
             case "plot":
                 from f1_ai.plotting import plot_evaluation
 

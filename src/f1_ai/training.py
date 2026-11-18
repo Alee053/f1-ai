@@ -7,6 +7,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, replace
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -100,48 +101,48 @@ def create_model(config: ExperimentConfig, env: Env | VecEnv, *, rehearsal: bool
     return model
 
 
-def make_training_envs(config: ExperimentConfig) -> VecEnv:
+def make_training_environment(config: ExperimentConfig) -> Env:
     settings = config.ppo
-
-    def training_environment():
-        env = make_env(config.environment)
-        if settings.time_progress_mix:
-            env = TimeProgressReward(env, settings.time_progress_mix)
-        if settings.rear_slip_penalty:
-            env = RearSlipPenalty(env, settings.rear_slip_penalty)
-        if settings.front_lock_penalty:
-            env = FrontLockPenalty(env, settings.front_lock_penalty)
-        if settings.road_contact_penalty:
-            env = RoadContactPenalty(env, settings.road_contact_penalty)
-        env = CircuitPool(env, config.circuits.train, shuffle=True)
-        info_keywords = ()
-        if settings.corner_curriculum:
-            env = CornerCurriculum(
-                env,
-                settings.n_envs,
-                braking=settings.braking_curriculum,
-                recovery=settings.recovery_curriculum,
-                launch=settings.launch_curriculum,
-                wide_entry=settings.wide_entry_curriculum,
-            )
-            info_keywords = (
-                "training_sector",
-                "curriculum_stage",
-                "training_recovery",
-                "training_launch",
-                "training_wide_entry",
-                "training_wide_sector_seconds",
-            )
-        return TransformReward(
-            Monitor(env, info_keywords=info_keywords),
-            lambda reward: float(reward) * settings.reward_scale,
+    env = make_env(config.environment)
+    if settings.time_progress_mix:
+        env = TimeProgressReward(env, settings.time_progress_mix)
+    if settings.rear_slip_penalty:
+        env = RearSlipPenalty(env, settings.rear_slip_penalty)
+    if settings.front_lock_penalty:
+        env = FrontLockPenalty(env, settings.front_lock_penalty)
+    if settings.road_contact_penalty:
+        env = RoadContactPenalty(env, settings.road_contact_penalty)
+    env = CircuitPool(env, config.circuits.train, shuffle=True)
+    info_keywords = ()
+    if settings.corner_curriculum:
+        env = CornerCurriculum(
+            env,
+            settings.n_envs,
+            braking=settings.braking_curriculum,
+            recovery=settings.recovery_curriculum,
+            launch=settings.launch_curriculum,
+            wide_entry=settings.wide_entry_curriculum,
         )
+        info_keywords = (
+            "training_sector",
+            "curriculum_stage",
+            "training_recovery",
+            "training_launch",
+            "training_wide_entry",
+            "training_wide_sector_seconds",
+        )
+    return TransformReward(
+        Monitor(env, info_keywords=info_keywords),
+        lambda reward: float(reward) * settings.reward_scale,
+    )
 
-    factories = [training_environment for _ in range(settings.n_envs)]
+
+def make_training_envs(config: ExperimentConfig) -> VecEnv:
+    factories = [partial(make_training_environment, config)] * config.ppo.n_envs
     # spawn evita heredar un contexto CUDA al crear los procesos de física.
     return (
         SubprocVecEnv(factories, start_method="spawn")
-        if settings.vec_env == "subproc"
+        if config.ppo.vec_env == "subproc"
         else DummyVecEnv(factories)
     )
 
