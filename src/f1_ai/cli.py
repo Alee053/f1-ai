@@ -82,6 +82,7 @@ def parser() -> argparse.ArgumentParser:
     replay.add_argument("--model", type=Path, required=True)
     replay.add_argument("--output", type=Path, required=True)
     replay.add_argument("--seed", type=int, default=100)
+    replay.add_argument("--device", choices=["cpu", "cuda"])
     play = commands.add_parser("play", help="Conducir con mando Xbox o teclado y ajustar la física")
     play.add_argument("--seed", type=int, default=0)
     play.add_argument("--output", type=Path)
@@ -92,6 +93,9 @@ def parser() -> argparse.ArgumentParser:
         "--frames", type=int, help="Limitar cuadros para comprobaciones de la interfaz"
     )
     play.add_argument("--headless", action="store_true")
+    for visual in (play, replay):
+        visual.add_argument("--camera", choices=["top", "chase"], default="top")
+        visual.add_argument("--grid-meters", type=float, default=1.0)
     commands.add_parser("controllers", help="Listar mandos detectados por SDL2")
     plan = commands.add_parser(
         "plan-reference", help="Planificar desde un mapa JSON guardado, sin simular ni entrenar"
@@ -307,6 +311,8 @@ def main():
                             exponent=args.steering_curve,
                             max_frames=args.frames,
                             headless=args.headless,
+                            camera=args.camera,
+                            grid_m=args.grid_meters,
                         ),
                         indent=2,
                     )
@@ -370,7 +376,16 @@ def main():
 
                 print(
                     json.dumps(
-                        record_replay(config, args.model, args.output, seed=args.seed), indent=2
+                        record_replay(
+                            config,
+                            args.model,
+                            args.output,
+                            seed=args.seed,
+                            camera=args.camera,
+                            grid_m=args.grid_meters,
+                            device=args.device,
+                        ),
+                        indent=2,
                     )
                 )
     except (ValueError, TypeError, OSError) as error:

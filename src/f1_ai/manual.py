@@ -11,6 +11,7 @@ import numpy as np
 import pygame
 
 from f1_ai.artifacts import create_directory, provenance, write_json
+from f1_ai.camera import ChaseCamera, validate_view
 from f1_ai.config import RACING_RESIDUAL, ExperimentConfig
 from f1_ai.controls import DrivingInput, XboxInput
 from f1_ai.environment import make_env
@@ -39,6 +40,7 @@ BUTTON_ACTIONS = {
     pygame.CONTROLLER_BUTTON_DPAD_RIGHT: "increase",
     pygame.CONTROLLER_BUTTON_LEFTSHOULDER: "aero",
     pygame.CONTROLLER_BUTTON_RIGHTSHOULDER: "save",
+    pygame.CONTROLLER_BUTTON_RIGHTSTICK: "camera",
 }
 KEY_ACTIONS = {
     pygame.K_ESCAPE: "exit",
@@ -54,6 +56,7 @@ KEY_ACTIONS = {
     pygame.K_F5: "save",
     pygame.K_g: "guide",
     pygame.K_b: "aero",
+    pygame.K_c: "camera",
 }
 
 
@@ -64,6 +67,11 @@ def export_config(config: ExperimentConfig, path: Path):
     formula = values["environment"].get("formula")
     if formula is not None:
         sections.append(("environment.formula", formula))
+    reference = values["environment"]["racing_reference"]
+    if reference is not None:
+        sections.extend(
+            (f"environment.racing_reference.{name}", value) for name, value in reference.items()
+        )
     sections.extend((name, values[name]) for name in ("circuits", "ppo"))
     lines = ["# Ajuste manual Formula v1. Coeficientes aproximados; sin homologación F1."]
     for name, values in sections:
@@ -76,7 +84,8 @@ def export_config(config: ExperimentConfig, path: Path):
 
 
 class ManualSession:
-    def __init__(self, config: ExperimentConfig, seed: int):
+    def __init__(self, config: ExperimentConfig, seed: int, *, camera="top", grid_m=1.0):
+        validate_view(camera, grid_m)
         if config.environment.control_profile == RACING_RESIDUAL:
             raise ValueError("La conducción manual requiere mandos directos.")
         if seed not in config.circuits.train:
@@ -91,6 +100,8 @@ class ManualSession:
         self.tuning = False
         self.selected = 0
         self.guide = False
+        self.camera_mode = camera
+        self.chase_camera = ChaseCamera(grid_m)
         self.revision = 0
         self.episode = 0
         self.env = None
@@ -129,6 +140,8 @@ class ManualSession:
             self.paused = True
         elif action == "guide":
             self.guide = not self.guide
+        elif action == "camera":
+            self.camera_mode = "chase" if self.camera_mode == "top" else "top"
         elif action in {"select_up", "select_down"}:
             self.selected = (self.selected + (-1 if action == "select_up" else 1)) % len(TUNING)
         elif action in {"increase", "decrease", "aero"}:
@@ -172,6 +185,9 @@ class ManualSession:
 
 def draw_track(surface, session: ManualSession):
     env = session.env
+    if session.camera_mode == "chase":
+        guide = env.geometry.points if session.guide else None
+        return session.chase_camera.draw(surface, env, guide=guide)
     surface.fill((39, 70, 57))
     width, height = surface.get_size()
     angle = -env.car.hull.angle
@@ -260,6 +276,7 @@ def draw_dashboard(window, session: ManualSession, pad: XboxInput, driving: Driv
         ("LB: aero A/B   RB/F5: guardar", 622),
         ("BACK/ESC salir   Flechas conducir", 648),
         ("G mostrar eje de referencia", 674),
+        ("C / pulsar stick der: cambiar vista", 700),
     ]:
         text(value, y, font=small)
     if session.paused:
@@ -296,7 +313,10 @@ def run_manual(
     exponent: float = 1.6,
     max_frames: int | None = None,
     headless: bool = False,
+    camera: str = "top",
+    grid_m: float = 1.0,
 ) -> dict:
+    validate_view(camera, grid_m)
     if max_frames is not None and max_frames < 1:
         raise ValueError("El límite de cuadros debe ser positivo.")
     if headless:
@@ -316,7 +336,7 @@ def run_manual(
     saves = 0
     try:
         pad = XboxInput(controller_index, deadzone=deadzone, exponent=exponent)
-        session = ManualSession(config, seed)
+        session = ManualSession(config, seed, camera=camera, grid_m=grid_m)
         write_json(
             output / "metadata.json",
             {
@@ -325,6 +345,8 @@ def run_manual(
                 "practice_environment": asdict(session.env.config),
                 "deadzone": deadzone,
                 "stick_exponent": exponent,
+                "initial_camera": camera,
+                "grid_m": grid_m,
             },
         )
         clock = pygame.time.Clock()

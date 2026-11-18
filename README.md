@@ -581,3 +581,40 @@ ganancia de velocidad de 1.2. Para medir esa referencia con la red desactivada:
 uv run f1-ai --config configs/formula-residual-braking-cuda.toml evaluate \
   --agents reference --split validation --output runs/reference-early-braking
 ```
+
+### Política con mandos directos
+
+`formula-direct-cuda.toml` activa `planned-v3`, con 41 entradas y contrato 4.
+La red recibe el estado físico y la trazada prevista con velocidades y curvaturas.
+Aplica directamente giro y pedal firmado a 50 Hz. Durante imitación, el seguidor
+calibrado etiqueta acciones en train. Durante la evaluación de la red, el
+planificador proporciona geometría y el seguidor queda fuera del control.
+El efecto del ajuste PPO se mide frente al checkpoint de imitación del que parte.
+
+```bash
+uv run f1-ai --config configs/formula-direct-cuda.toml demonstrations \
+  --teacher racing --output runs/direct-demos
+uv run f1-ai --config configs/formula-direct-cuda.toml clone \
+  --dataset runs/direct-demos --epochs 40 --dagger-rounds 2 --output runs/direct-bc
+uv run f1-ai --config configs/formula-direct-cuda.toml train \
+  --initial-model runs/direct-bc/best_model.zip --output runs/direct-ppo
+```
+
+### Vista de persecución
+
+La cámara `chase` muestra el circuito plano desde atrás con una inclinación de
+27,5 grados hacia abajo. La cuadrícula está anclada al mundo, con divisiones de
+un metro y líneas principales cada cinco. En conducción manual se puede cambiar
+de vista con `C` o pulsando el stick derecho del mando. La vista es independiente
+de las observaciones de la política y de la configuración física.
+
+```bash
+uv run f1-ai play --camera chase --grid-meters 1
+uv run f1-ai --config configs/formula-direct-cuda.toml replay \
+  --model runs/direct-ppo/best_model.zip --seed 117 --camera chase \
+  --grid-meters 1 --device cpu --output runs/replays/formula-chase.mp4
+```
+
+El MP4 toma 25 cuadros por segundo de los 50 pasos físicos del entorno. En
+`chase` incluye velocidad, gas, freno y deslizamiento. `top` mantiene la vista
+cenital.
