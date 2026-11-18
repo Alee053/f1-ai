@@ -12,6 +12,7 @@ from f1_ai.racing_line import RacingPlan
 SECTOR_PROBABILITY = (0.70, 0.55, 0.25)
 SECTOR_METERS = 120.0
 SECTOR_STEPS = 450
+LAUNCH_STEPS = 200
 
 
 @dataclass(frozen=True)
@@ -70,17 +71,27 @@ class CornerStart:
 class CornerCurriculum(gym.Wrapper):
     """Mezcla sectores y vueltas. Aumenta la dificultad y vuelve a priorizar vueltas."""
 
-    def __init__(self, env: gym.Env, n_envs: int, *, braking: bool = False, recovery: bool = False):
+    def __init__(
+        self,
+        env: gym.Env,
+        n_envs: int,
+        *,
+        braking: bool = False,
+        recovery: bool = False,
+        launch: bool = False,
+    ):
         super().__init__(env)
         self.n_envs = n_envs
         self.braking = braking
         self.recovery = recovery
+        self.launch = launch
         self.timesteps = 0
         self.rng = np.random.default_rng(0)
         self.stage = 0
         self.sector = False
         self.sector_steps = 0
         self.recovery_start = False
+        self.launch_start = False
 
     def set_curriculum_timesteps(self, timesteps: int):
         self.timesteps = timesteps
@@ -90,11 +101,16 @@ class CornerCurriculum(gym.Wrapper):
             self.rng = np.random.default_rng(np.random.SeedSequence([seed, 159]))
         self.stage = 2 if self.timesteps >= 81_920 else int(self.timesteps >= 32_768)
         self.sector = bool(self.rng.random() < SECTOR_PROBABILITY[self.stage])
+        self.launch_start = bool(self.sector and self.launch and self.rng.random() < 0.5)
         self.recovery_start = bool(
-            self.sector and self.recovery and self.stage > 0 and self.rng.random() < 0.5
+            self.sector
+            and not self.launch_start
+            and self.recovery
+            and self.stage > 0
+            and self.rng.random() < 0.5
         )
         self.sector_steps = 0
-        if self.sector:
+        if self.sector and not self.launch_start:
             start = CornerStart(
                 int(self.rng.integers(2**32)), self.stage, self.braking, self.recovery_start
             )
@@ -108,6 +124,7 @@ class CornerCurriculum(gym.Wrapper):
             "training_sector": self.sector,
             "curriculum_stage": self.stage,
             "training_recovery": self.recovery_start,
+            "training_launch": self.launch_start,
         }
 
     def step(self, action):
@@ -116,10 +133,12 @@ class CornerCurriculum(gym.Wrapper):
         self.sector_steps += 1
         if self.sector and not (terminated or truncated):
             meters = info["forward_progress"] * info["track_length"]
-            if meters >= SECTOR_METERS or self.sector_steps >= SECTOR_STEPS:
+            step_limit = LAUNCH_STEPS if self.launch_start else SECTOR_STEPS
+            if meters >= SECTOR_METERS or self.sector_steps >= step_limit:
                 # Truncar permite al crítico usar la observación final. No se añade bono de vuelta.
                 truncated = True
-                info = {**info, "termination_reason": "sector_limit"}
+                reason = "launch_limit" if self.launch_start else "sector_limit"
+                info = {**info, "termination_reason": reason}
         return (
             observation,
             reward,

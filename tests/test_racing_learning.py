@@ -143,20 +143,28 @@ def test_corner_spawn_keeps_track_and_starts_with_consistent_velocity(braking, r
         env.close()
 
 
-def test_corner_curriculum_truncates_practice_without_crediting_a_lap():
+@pytest.mark.parametrize(
+    ("launch", "reason", "duration"),
+    [(False, "sector_limit", 9.0), (True, "launch_limit", 4.0)],
+)
+def test_corner_curriculum_truncates_practice_without_crediting_a_lap(launch, reason, duration):
     config = load_config("configs/formula-curriculum-cuda.toml")
-    env = CornerCurriculum(CircuitPool(make_env(config.environment), (7,), shuffle=True), 4)
+    env = CornerCurriculum(
+        CircuitPool(make_env(config.environment), (7,), shuffle=True), 4, launch=launch
+    )
     try:
         _, info = env.reset(seed=42)
         assert info["training_sector"] and info["curriculum_stage"] == 0
+        assert info["training_launch"] is launch
+        assert (info["speed"] == 0.0) is launch
         assert info["circuit_seed"] == 7
         for _ in range(450):
             _, _, terminated, truncated, info = env.step(np.array([0, -0.6], dtype=np.float32))
             if terminated or truncated:
                 break
         assert truncated and not terminated and not info["lap_complete"]
-        assert info["termination_reason"] == "sector_limit"
-        assert info["simulated_seconds"] == 9.0
+        assert info["termination_reason"] == reason
+        assert info["simulated_seconds"] == duration
         env.set_curriculum_timesteps(81_920)
         assert env.reset(seed=42)[1]["curriculum_stage"] == 2
     finally:

@@ -119,8 +119,14 @@ def make_training_envs(config: ExperimentConfig) -> VecEnv:
                 settings.n_envs,
                 braking=settings.braking_curriculum,
                 recovery=settings.recovery_curriculum,
+                launch=settings.launch_curriculum,
             )
-            info_keywords = ("training_sector", "curriculum_stage", "training_recovery")
+            info_keywords = (
+                "training_sector",
+                "curriculum_stage",
+                "training_recovery",
+                "training_launch",
+            )
         return TransformReward(
             Monitor(env, info_keywords=info_keywords),
             lambda reward: float(reward) * settings.reward_scale,

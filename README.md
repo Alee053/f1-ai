@@ -656,6 +656,10 @@ empezar a 14–38 m del ápice, con desplazamientos de hasta 2 m y orientación
 de hasta 10 grados respecto al eje de pista. El registro de entrenamiento
 distingue esos episodios.
 
+`launch_curriculum = true` dedica la mitad de los sectores a salidas desde
+reposo. Esos episodios empiezan en la meta y duran hasta cuatro segundos.
+Sirven para practicar la aceleración inicial con los mandos de la red.
+
 El ajuste opcional `rear_slip_penalty` en `[ppo]` añade un coste al superar
 0,30 de deslizamiento longitudinal en una rueda trasera sobre el asfalto.
 La política conserva el giro y el pedal que haya elegido.
