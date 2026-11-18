@@ -263,8 +263,8 @@ def clone(
     data = load_dataset(dataset, config)
     with (dataset / "metadata.json").open() as stream:
         teacher = json.load(stream)["teacher"]
-    ppo_teacher = teacher.get("teacher_kind") == "ppo"
-    requires_teacher = ppo_teacher and dagger_rounds > 0
+    teacher_kind = teacher.get("teacher_kind", "pursuit")
+    requires_teacher = teacher_kind == "ppo" and dagger_rounds > 0
     if requires_teacher != (teacher_model is not None):
         raise ValueError("--teacher-model se requiere para DAgger con un maestro PPO.")
     if teacher_model is not None:
@@ -275,7 +275,7 @@ def clone(
             "teacher_kind": "ppo",
             "checkpoint_teacher": load_model(teacher_model, source, device="cpu"),
         }
-    elif teacher.get("teacher_kind") == "racing":
+    elif teacher_kind == "racing":
         teacher["reference_settings"] = ReferenceConfig(**teacher["reference_settings"])
         teacher["follower_settings"] = FollowerConfig(**teacher["follower_settings"])
     output = create_directory(output)
@@ -290,7 +290,7 @@ def clone(
             "epochs": epochs,
             "learning_rate": learning_rate,
             "dagger_rounds": dagger_rounds,
-            "teacher_kind": teacher["teacher_kind"],
+            "teacher_kind": teacher_kind,
             "only_training_labels": True,
             "checkpoint_selection": "clean_laps, completed_laps, clean_lap_time, coverage"
             if config.environment.reward_profile in LAP_TIME_REWARDS
