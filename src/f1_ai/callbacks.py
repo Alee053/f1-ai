@@ -61,6 +61,12 @@ class DrivingEvaluation(BaseCallback):
         self.logger.record("eval/completion_rate", summary["completion_rate"])
         self.logger.record("eval/mean_coverage", summary["mean_coverage"])
         self.logger.record("eval/mean_reward", summary["mean_return"])
+        if self.config.ppo.no_progress_steps and self.model.ep_info_buffer:
+            failures = sum(
+                episode["termination_reason"] == "no_progress"
+                for episode in self.model.ep_info_buffer
+            )
+            self.logger.record("train/recent_no_progress_episodes", failures)
         if self.config.ppo.corner_curriculum and self.model.ep_info_buffer:
             recent = self.model.ep_info_buffer
             self.logger.record(

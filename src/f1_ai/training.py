@@ -33,7 +33,13 @@ from f1_ai.config import (
 )
 from f1_ai.curriculum import CornerCurriculum
 from f1_ai.environment import CircuitPool, make_env, observation_contract
-from f1_ai.rewards import FrontLockPenalty, RearSlipPenalty, RoadContactPenalty, TimeProgressReward
+from f1_ai.rewards import (
+    FrontLockPenalty,
+    NoProgressTermination,
+    RearSlipPenalty,
+    RoadContactPenalty,
+    TimeProgressReward,
+)
 from f1_ai.supervision import ActorRehearsal, RehearsalPPO
 
 
@@ -122,6 +128,7 @@ def make_training_environment(config: ExperimentConfig) -> Env:
             recovery=settings.recovery_curriculum,
             launch=settings.launch_curriculum,
             wide_entry=settings.wide_entry_curriculum,
+            road_starts=settings.road_start_curriculum,
         )
         info_keywords = (
             "training_sector",
@@ -131,6 +138,9 @@ def make_training_environment(config: ExperimentConfig) -> Env:
             "training_wide_entry",
             "training_wide_sector_seconds",
         )
+    if settings.no_progress_steps:
+        env = NoProgressTermination(env, settings.no_progress_steps)
+        info_keywords = (*info_keywords, "termination_reason")
     return TransformReward(
         Monitor(env, info_keywords=info_keywords),
         lambda reward: float(reward) * settings.reward_scale,

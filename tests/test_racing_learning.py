@@ -12,7 +12,7 @@ from f1_ai.agents import PPOAgent
 from f1_ai.artifacts import provenance, write_json
 from f1_ai.config import load_config
 from f1_ai.curriculum import WIDE_SECTOR_METERS, CornerCurriculum, CornerStart
-from f1_ai.environment import CircuitPool, make_env, observation_contract
+from f1_ai.environment import CircuitPool, NumericCarRacing, make_env, observation_contract
 from f1_ai.imitation import validate_dataset
 from f1_ai.plan_features import ReferenceTimeProgress
 from f1_ai.racing_line import ReferenceConfig
@@ -22,7 +22,75 @@ from f1_ai.rewards import (
     RoadContactPenalty,
     lap_time_step_reward,
 )
-from f1_ai.training import _initialize_policy, create_model, load_model, train
+from f1_ai.training import (
+    _initialize_policy,
+    create_model,
+    load_model,
+    make_training_environment,
+    train,
+)
+
+
+def test_training_prefers_useful_advancement_to_standing_still():
+    config = load_config("configs/formula-road-cuda.toml")
+    config = replace(
+        config,
+        circuits=replace(config.circuits, train=(0,)),
+        ppo=replace(config.ppo, no_progress_steps=150),
+    )
+
+    def discounted_rollout(pedal):
+        env = make_training_environment(config)
+        try:
+            env.reset(seed=42)
+            action = np.array([0.0, pedal], dtype=np.float32)
+            total = 0.0
+            for step in range(config.environment.max_steps):
+                _, reward, terminated, truncated, info = env.step(action)
+                total += reward * config.ppo.gamma**step
+                if terminated or truncated:
+                    return total, step + 1, info
+            pytest.fail("El episodio debe terminar dentro del horizonte.")
+        finally:
+            env.close()
+
+    idle_return, steps, idle = discounted_rollout(0.0)
+    rolling_return, _, rolling = discounted_rollout(0.3)
+    assert steps == 150 and idle["termination_reason"] == "no_progress"
+    assert rolling["termination_reason"] == "off_track"
+    assert rolling["forward_progress"] > 0.05
+    assert rolling_return > idle_return
+
+
+def test_road_curriculum_places_students_before_curves_without_planning(monkeypatch):
+    config = load_config("configs/formula-road-cuda.toml")
+    config = replace(
+        config,
+        circuits=replace(config.circuits, train=(0,)),
+        ppo=replace(
+            config.ppo,
+            corner_curriculum=True,
+            road_start_curriculum=True,
+            launch_curriculum=True,
+        ),
+    )
+
+    def reject_plan(*args):
+        pytest.fail("Las salidas por geometría no necesitan una trazada.")
+
+    monkeypatch.setattr(NumericCarRacing, "_track_plan", reject_plan)
+    env = make_training_environment(config)
+    try:
+        for seed in range(16):
+            observation, info = env.reset(seed=seed)
+            if info["training_sector"] and not info["training_launch"]:
+                assert observation.shape == (36,)
+                assert 6.0 <= info["speed"] <= 13.5
+                assert env.unwrapped.road_contact_fraction >= 0.5
+                return
+        pytest.fail("El currículo debe incluir salidas en movimiento.")
+    finally:
+        env.close()
 
 
 def test_planned_policy_controls_steering_and_pedal_directly():

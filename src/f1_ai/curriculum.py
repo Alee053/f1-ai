@@ -16,6 +16,9 @@ LAUNCH_STEPS = 200
 WIDE_SECTOR_METERS = 145.0
 WIDE_SECTOR_STEPS = 500
 WIDE_SECTOR_TIME_BONUS = 0.10
+ROAD_SECTOR_PROBABILITY = (0.85, 0.65, 0.35)
+ROAD_LAUNCH_PROBABILITY = (0.20, 0.35, 0.50)
+ROAD_SECTOR_METERS = (55.0, 90.0, 120.0)
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,30 @@ class CornerStart:
         return angle, float(x), float(y), speed
 
 
+@dataclass(frozen=True)
+class RoadStart:
+    seed: int
+    stage: int
+
+    def pose(self, road: CircuitGeometry) -> tuple[float, float, float, float]:
+        rng = np.random.default_rng(self.seed)
+        turns = np.linalg.norm(road.tangents - np.roll(road.tangents, 1, axis=0), axis=1)
+        corners = np.flatnonzero(turns >= np.quantile(turns, 0.75))
+        apex = road.cumulative[rng.choice(corners)]
+        position = road.sample(apex - rng.uniform(18.0, 42.0))
+        direction = road.project(position).tangent
+        right = np.array([direction[1], -direction[0]])
+        lateral_range = (0.3, 0.8, 1.4)[self.stage]
+        yaw_range = (3.0, 5.0, 8.0)[self.stage]
+        heading = math.atan2(-direction[0], direction[1]) + math.radians(
+            rng.uniform(-yaw_range, yaw_range)
+        )
+        x, y = position + right * rng.uniform(-lateral_range, lateral_range)
+        speed_ranges = ((7.0, 13.0), (9.0, 17.0), (10.0, 21.0))
+        speed = rng.uniform(*speed_ranges[self.stage])
+        return heading, float(x), float(y), float(speed)
+
+
 class CornerCurriculum(gym.Wrapper):
     """Mezcla sectores y vueltas. Aumenta la dificultad y vuelve a priorizar vueltas."""
 
@@ -93,6 +120,7 @@ class CornerCurriculum(gym.Wrapper):
         recovery: bool = False,
         launch: bool = False,
         wide_entry: bool = False,
+        road_starts: bool = False,
     ):
         super().__init__(env)
         self.n_envs = n_envs
@@ -100,6 +128,7 @@ class CornerCurriculum(gym.Wrapper):
         self.recovery = recovery
         self.launch = launch
         self.wide_entry = wide_entry
+        self.road_starts = road_starts
         self.timesteps = 0
         self.rng = np.random.default_rng(0)
         self.stage = 0
@@ -118,8 +147,12 @@ class CornerCurriculum(gym.Wrapper):
         if seed is not None:
             self.rng = np.random.default_rng(np.random.SeedSequence([seed, 159]))
         self.stage = 2 if self.timesteps >= 81_920 else int(self.timesteps >= 32_768)
-        self.sector = bool(self.rng.random() < SECTOR_PROBABILITY[self.stage])
-        self.launch_start = bool(self.sector and self.launch and self.rng.random() < 0.5)
+        sector_probability = ROAD_SECTOR_PROBABILITY if self.road_starts else SECTOR_PROBABILITY
+        launch_probability = ROAD_LAUNCH_PROBABILITY[self.stage] if self.road_starts else 0.5
+        self.sector = bool(self.rng.random() < sector_probability[self.stage])
+        self.launch_start = bool(
+            self.sector and self.launch and self.rng.random() < launch_probability
+        )
         self.wide_start = bool(
             self.sector and not self.launch_start and self.wide_entry and self.rng.random() < 0.7
         )
@@ -135,13 +168,17 @@ class CornerCurriculum(gym.Wrapper):
         self.wide_sector_lock = False
         self.wide_sector_seconds = 0.0
         if self.sector and not self.launch_start:
-            start = CornerStart(
-                int(self.rng.integers(2**32)),
-                self.stage,
-                braking=self.braking,
-                recovery=self.recovery_start,
-                wide_entry=self.wide_start,
-            )
+            pose_seed = int(self.rng.integers(2**32))
+            if self.road_starts:
+                start = RoadStart(pose_seed, self.stage)
+            else:
+                start = CornerStart(
+                    pose_seed,
+                    self.stage,
+                    braking=self.braking,
+                    recovery=self.recovery_start,
+                    wide_entry=self.wide_start,
+                )
             options = {**(options or {}), "corner_start": start}
         obs, info = self.env.reset(seed=seed, options=options)
         return obs, self._episode_info(info)
@@ -174,6 +211,10 @@ class CornerCurriculum(gym.Wrapper):
             elif self.launch_start:
                 step_limit = LAUNCH_STEPS
                 reason = "launch_limit"
+            elif self.road_starts:
+                distance_limit = ROAD_SECTOR_METERS[self.stage]
+                step_limit = SECTOR_STEPS
+                reason = "road_sector_limit"
             else:
                 step_limit = SECTOR_STEPS
             reached_exit = meters >= distance_limit

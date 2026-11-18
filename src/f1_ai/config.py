@@ -156,12 +156,14 @@ class PPOConfig:
     recovery_curriculum: bool = False
     launch_curriculum: bool = False
     wide_entry_curriculum: bool = False
+    road_start_curriculum: bool = False
     rear_slip_penalty: float = 0.0
     front_lock_penalty: float = 0.0
     time_progress_mix: float = 0.0
     rehearsal_learning_rate: float = 1e-4
     rehearsal_fade_steps: int = 0
     road_contact_penalty: float = 0.0
+    no_progress_steps: int = 0
 
     def __post_init__(self):
         if not isinstance(self.device, str) or self.device not in {"cpu", "cuda"}:
@@ -209,6 +211,7 @@ class PPOConfig:
             "recovery_curriculum",
             "launch_curriculum",
             "wide_entry_curriculum",
+            "road_start_curriculum",
         ):
             enabled = getattr(self, name)
             if type(enabled) is not bool or (enabled and not self.corner_curriculum):
@@ -225,6 +228,8 @@ class PPOConfig:
             raise ValueError("rehearsal_fade_steps debe ser un entero no negativo.")
         if isinstance(self.road_contact_penalty, bool) or not 0 <= self.road_contact_penalty <= 2:
             raise ValueError("road_contact_penalty debe pertenecer a [0, 2].")
+        if type(self.no_progress_steps) is not int or self.no_progress_steps < 0:
+            raise ValueError("no_progress_steps debe ser un entero no negativo.")
         if (
             type(self.sde_sample_freq) is not int
             or self.sde_sample_freq < -1
@@ -240,6 +245,19 @@ class ExperimentConfig:
     ppo: PPOConfig
 
     def __post_init__(self):
+        if self.ppo.road_start_curriculum and (
+            self.environment.observation_profile != ROAD_OBSERVATION
+            or self.ppo.braking_curriculum
+            or self.ppo.recovery_curriculum
+            or self.ppo.wide_entry_curriculum
+            or self.ppo.time_progress_mix
+        ):
+            raise ValueError("road_start_curriculum requiere road-v5 y un currículo sin trazada.")
+        if self.ppo.no_progress_steps and (
+            self.environment.control_profile != "direct"
+            or self.environment.reward_profile != "lap-time-v1"
+        ):
+            raise ValueError("no_progress_steps requiere mandos directos y recompensa lap-time-v1.")
         if self.ppo.wide_entry_curriculum and self.environment.reward_profile != "lap-time-v1":
             raise ValueError("wide_entry_curriculum requiere recompensa lap-time-v1.")
         if self.ppo.time_progress_mix and (

@@ -7,6 +7,47 @@ from f1_ai.config import ReferenceDrivingConfig
 from f1_ai.plan_features import ReferenceTimeProgress, track_plan
 
 LAP_PROGRESS_POINTS = 1000.0
+MINIMUM_PROGRESS_M = 4.0
+NO_PROGRESS_COST = 120.0
+
+
+class NoProgressTermination(gym.Wrapper):
+    """Acota los episodios de entrenamiento sin avance válido."""
+
+    def __init__(self, env: gym.Env, patience_steps: int):
+        super().__init__(env)
+        self.patience_steps = patience_steps
+        self.last_progress_m = 0.0
+        self.new_progress_m = 0.0
+        self.steps_without_progress = 0
+
+    def reset(self, *, seed=None, options=None):
+        self.last_progress_m = 0.0
+        self.new_progress_m = 0.0
+        self.steps_without_progress = 0
+        return self.env.reset(seed=seed, options=options)
+
+    def step(self, action):
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        progress_m = info["forward_progress"] * info["track_length"]
+        on_road = self.env.unwrapped.road_contact_fraction >= 0.5
+        if on_road:
+            self.new_progress_m += progress_m - self.last_progress_m
+        self.last_progress_m = progress_m
+        if self.new_progress_m >= MINIMUM_PROGRESS_M:
+            self.new_progress_m = 0.0
+            self.steps_without_progress = 0
+        else:
+            self.steps_without_progress += 1
+        if (
+            on_road
+            and not (terminated or truncated)
+            and self.steps_without_progress >= self.patience_steps
+        ):
+            terminated = True
+            reward -= NO_PROGRESS_COST
+            info = {**info, "termination_reason": "no_progress"}
+        return observation, reward, terminated, truncated, info
 
 
 class RoadContactPenalty(gym.Wrapper):

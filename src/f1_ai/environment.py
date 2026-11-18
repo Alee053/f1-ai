@@ -19,7 +19,7 @@ from f1_ai.config import (
     EnvironmentConfig,
     ReferenceDrivingConfig,
 )
-from f1_ai.curriculum import CornerStart
+from f1_ai.curriculum import CornerStart, RoadStart
 from f1_ai.geometry import CircuitGeometry, LapProgress
 from f1_ai.plan_features import PREVIEW_M, CorridorFeatures, PlanFeatures, track_plan
 from f1_ai.rewards import lap_time_step_reward
@@ -133,7 +133,7 @@ class NumericCarRacing(CarRacing):
         self.geometry: CircuitGeometry | None = None
         self._plan_features: PlanFeatures | None = None
         self._corridor_features: CorridorFeatures | None = None
-        self._corner_start: CornerStart | None = None
+        self._corner_start: CornerStart | RoadStart | None = None
         self.progress: LapProgress | None = None
         self.elapsed_steps = 0
         self.off_track_steps = 0
@@ -231,9 +231,12 @@ class NumericCarRacing(CarRacing):
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         start = (options or {}).get("corner_start")
         if start is not None and (
-            not isinstance(start, CornerStart)
+            not isinstance(start, (CornerStart, RoadStart))
             or self.config.observation_profile not in MAP_OBSERVATIONS
             or self.config.control_profile != "direct"
+            or (
+                isinstance(start, RoadStart) and self.config.observation_profile != ROAD_OBSERVATION
+            )
         ):
             raise ValueError("La salida de sector requiere el currículo de Formula directo.")
         self.geometry = None
@@ -267,7 +270,9 @@ class NumericCarRacing(CarRacing):
                 if not isinstance(self.car, FormulaCar):
                     angle, x, y = self.track[0][1:4]
                     speed = 0.0
-                    if self._corner_start is not None:
+                    if isinstance(self._corner_start, RoadStart):
+                        angle, x, y, speed = self._corner_start.pose(self._road_geometry())
+                    elif self._corner_start is not None:
                         reference = self.config.racing_reference or ReferenceDrivingConfig()
                         angle, x, y, speed = self._corner_start.pose(
                             self._road_geometry(), self._track_plan(reference)
