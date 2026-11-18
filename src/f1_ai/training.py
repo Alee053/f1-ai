@@ -211,6 +211,8 @@ def train(
         raise ValueError("--transfer-vehicle requiere --initial-model.")
     if rehearsal_dataset is not None and config.environment.control_profile == RACING_RESIDUAL:
         raise ValueError("El repaso BC usa mandos directos, no correcciones de la trazada.")
+    if config.ppo.rehearsal_fade_steps and rehearsal_dataset is None:
+        raise ValueError("rehearsal_fade_steps requiere un dataset de repaso.")
     if resume_model is not None and smoke:
         raise ValueError("La prueba smoke no permite reanudar un entrenamiento.")
     source_path = resume_model if resume_model is not None else initial_model
@@ -307,6 +309,7 @@ def train(
             model.actor_rehearsal = ActorRehearsal(
                 model, data, seed=settings.seed, learning_rate=settings.rehearsal_learning_rate
             )
+            model.rehearsal_fade_steps = settings.rehearsal_fade_steps
             metadata["training_variant"] = "ppo_rehearsal"
             metadata["rehearsal"] = {
                 "dataset": str(rehearsal_dataset),
@@ -315,6 +318,7 @@ def train(
                 "batch_size": 256,
                 "updates_per_rollout": 4,
                 "learning_rate": settings.rehearsal_learning_rate,
+                "fade_steps": settings.rehearsal_fade_steps,
                 "critic_updated": False,
                 "log_std_updated": False,
                 "optimizer_restored": False,

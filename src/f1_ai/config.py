@@ -160,6 +160,7 @@ class PPOConfig:
     front_lock_penalty: float = 0.0
     time_progress_mix: float = 0.0
     rehearsal_learning_rate: float = 1e-4
+    rehearsal_fade_steps: int = 0
     road_contact_penalty: float = 0.0
 
     def __post_init__(self):
@@ -220,6 +221,8 @@ class PPOConfig:
             raise ValueError("time_progress_mix debe pertenecer a [0, 1].")
         if not 0 < self.rehearsal_learning_rate < 1:
             raise ValueError("rehearsal_learning_rate debe pertenecer a (0, 1).")
+        if type(self.rehearsal_fade_steps) is not int or self.rehearsal_fade_steps < 0:
+            raise ValueError("rehearsal_fade_steps debe ser un entero no negativo.")
         if isinstance(self.road_contact_penalty, bool) or not 0 <= self.road_contact_penalty <= 2:
             raise ValueError("road_contact_penalty debe pertenecer a [0, 2].")
         if (

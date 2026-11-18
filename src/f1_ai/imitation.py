@@ -4,6 +4,7 @@ El controlador etiqueta estados durante la recolección. La inferencia del model
 guardado utiliza exclusivamente la red neuronal. Esta etapa no se llama PPO.
 """
 
+import hashlib
 import json
 import time
 from dataclasses import asdict, replace
@@ -30,7 +31,15 @@ from f1_ai.plan_features import track_plan
 from f1_ai.racing_controller import FollowerConfig, RacingController, ReferenceState
 from f1_ai.racing_line import ReferenceConfig
 from f1_ai.supervision import fit_actor as fit_actor
-from f1_ai.training import create_model
+from f1_ai.training import create_model, load_model
+
+
+def _teacher_environment(environment: EnvironmentConfig) -> EnvironmentConfig:
+    if environment.control_profile == RACING_RESIDUAL or (
+        environment.observation_profile not in {CORRIDOR_OBSERVATION, ROAD_OBSERVATION}
+    ):
+        raise ValueError("El maestro PPO requiere mandos directos con corridor-v4 o road-v5.")
+    return replace(environment, observation_profile=CORRIDOR_OBSERVATION)
 
 
 def validate_dataset(data: dict[str, np.ndarray], config: ExperimentConfig) -> None:
@@ -59,6 +68,7 @@ def collect_dataset(
     target_speed: float = 30.0,
     lateral_acceleration: float = 8.0,
     teacher_kind: str = "pursuit",
+    checkpoint_teacher: PPO | None = None,
     reference_settings: ReferenceConfig | None = None,
     follower_settings: FollowerConfig | None = None,
 ) -> tuple[dict[str, np.ndarray], list[dict]]:
@@ -67,20 +77,28 @@ def collect_dataset(
     if not 0 <= expert_probability <= 1:
         raise ValueError("La probabilidad de usar al experto debe pertenecer a [0, 1].")
     rng = np.random.default_rng(config.ppo.seed)
-    if teacher_kind not in {"pursuit", "racing"}:
-        raise ValueError("El experto debe ser pursuit o racing.")
+    if teacher_kind not in {"pursuit", "racing", "ppo"}:
+        raise ValueError("El experto debe ser pursuit, racing o ppo.")
+    if (teacher_kind == "ppo") != (checkpoint_teacher is not None):
+        raise ValueError("El maestro PPO requiere su checkpoint de confianza.")
     if teacher_kind == "racing" and config.environment.vehicle_model != "formula-v1":
         raise ValueError("El experto racing requiere Formula.")
     reference = config.environment.racing_reference or ReferenceDrivingConfig()
     reference_settings = reference_settings or reference.plan
     follower_settings = follower_settings or reference.follower
-    teacher = (
-        PursuitAgent(target_speed, lateral_acceleration, environment=config.environment)
-        if teacher_kind == "pursuit"
-        else None
-    )
+    environment = config.environment
+    projection = None
+    if teacher_kind == "pursuit":
+        teacher = PursuitAgent(target_speed, lateral_acceleration, environment=environment)
+    elif teacher_kind == "ppo":
+        teacher = PPOAgent(checkpoint_teacher)
+        environment = _teacher_environment(environment)
+        if environment != config.environment:
+            _, source_names = observation_contract(environment)
+            _, student_names = observation_contract(config.environment)
+            projection = [source_names.index(name) for name in student_names]
     student = PPOAgent(model) if model is not None else None
-    env = make_env(config.environment)
+    env = make_env(environment)
     observations, actions, seeds = [], [], []
     episodes = []
     try:
@@ -104,12 +122,13 @@ def collect_dataset(
                     )
                 else:
                     expert_action = teacher.action(observation)
-                observations.append(observation.copy())
+                measured = observation if projection is None else observation[projection]
+                observations.append(measured.copy())
                 actions.append(expert_action)
                 seeds.append(seed)
                 action = expert_action
                 if student is not None and rng.random() >= expert_probability:
-                    action = student.action(observation)
+                    action = student.action(measured)
                 observation, _, terminated, truncated, info = env.step(action)
                 if config.environment.vehicle_model == "formula-v1":
                     max_slip = max(max_slip, max(abs(value) for value in info["slip_ratios"]))
@@ -181,7 +200,14 @@ def record_demonstrations(
     target_speed: float = 30.0,
     lateral_acceleration: float = 8.0,
     teacher_kind: str = "pursuit",
+    teacher_model: Path | None = None,
 ) -> dict:
+    if (teacher_kind == "ppo") != (teacher_model is not None):
+        raise ValueError("--teacher-model se requiere únicamente con --teacher ppo.")
+    checkpoint = None
+    if teacher_model is not None:
+        source = replace(config, environment=_teacher_environment(config.environment))
+        checkpoint = load_model(teacher_model, source, device="cpu")
     output = create_directory(output)
     started = time.perf_counter()
     data, episodes = collect_dataset(
@@ -189,6 +215,7 @@ def record_demonstrations(
         target_speed=target_speed,
         lateral_acceleration=lateral_acceleration,
         teacher_kind=teacher_kind,
+        checkpoint_teacher=checkpoint,
     )
     metadata = provenance(config, kind="demonstrations")
     metadata["teacher"] = {
@@ -203,6 +230,12 @@ def record_demonstrations(
             follower_settings=asdict(reference.follower),
         )
         metadata["teacher_information_regime"] = "full_map_and_physical_state"
+    elif teacher_model is not None:
+        metadata["teacher"] = {
+            "teacher_kind": "ppo",
+            "model_sha256": hashlib.sha256(teacher_model.read_bytes()).hexdigest(),
+        }
+        metadata["teacher_information_regime"] = CORRIDOR_OBSERVATION
     write_json(output / "metadata.json", metadata)
     np.savez_compressed(output / "dataset.npz", **data)
     result = {
@@ -223,10 +256,28 @@ def clone(
     epochs: int = 50,
     learning_rate: float = 1e-3,
     dagger_rounds: int = 0,
+    teacher_model: Path | None = None,
 ) -> dict:
     if dagger_rounds < 0:
         raise ValueError("El número de rondas DAgger no puede ser negativo.")
     data = load_dataset(dataset, config)
+    with (dataset / "metadata.json").open() as stream:
+        teacher = json.load(stream)["teacher"]
+    ppo_teacher = teacher.get("teacher_kind") == "ppo"
+    requires_teacher = ppo_teacher and dagger_rounds > 0
+    if requires_teacher != (teacher_model is not None):
+        raise ValueError("--teacher-model se requiere para DAgger con un maestro PPO.")
+    if teacher_model is not None:
+        if hashlib.sha256(teacher_model.read_bytes()).hexdigest() != teacher["model_sha256"]:
+            raise ValueError("El maestro PPO no coincide con el del dataset.")
+        source = replace(config, environment=_teacher_environment(config.environment))
+        teacher = {
+            "teacher_kind": "ppo",
+            "checkpoint_teacher": load_model(teacher_model, source, device="cpu"),
+        }
+    elif teacher.get("teacher_kind") == "racing":
+        teacher["reference_settings"] = ReferenceConfig(**teacher["reference_settings"])
+        teacher["follower_settings"] = FollowerConfig(**teacher["follower_settings"])
     output = create_directory(output)
     torch.set_num_threads(config.ppo.torch_threads)
     env = make_env(config.environment)
@@ -239,6 +290,7 @@ def clone(
             "epochs": epochs,
             "learning_rate": learning_rate,
             "dagger_rounds": dagger_rounds,
+            "teacher_kind": teacher["teacher_kind"],
             "only_training_labels": True,
             "checkpoint_selection": "clean_laps, completed_laps, clean_lap_time, coverage"
             if config.environment.reward_profile in LAP_TIME_REWARDS
@@ -254,11 +306,6 @@ def clone(
             else None,
         }
         write_json(output / "metadata.json", metadata)
-        with (dataset / "metadata.json").open() as stream:
-            teacher = json.load(stream)["teacher"]
-        if teacher.get("teacher_kind") == "racing":
-            teacher["reference_settings"] = ReferenceConfig(**teacher["reference_settings"])
-            teacher["follower_settings"] = FollowerConfig(**teacher["follower_settings"])
         history = []
         best_score = None
         for round_index in range(dagger_rounds + 1):

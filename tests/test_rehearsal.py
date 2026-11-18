@@ -48,6 +48,47 @@ def test_rehearsal_pulls_the_actor_toward_demonstrations_without_changing_critic
         env.close()
 
 
+def test_rehearsal_fades_to_zero_and_stays_off_on_resume(tmp_path, monkeypatch):
+    config = load_config("configs/ppo.toml")
+    config = replace(
+        config,
+        environment=replace(config.environment, max_steps=8),
+        circuits=replace(config.circuits, train=(0,), validation=(100,)),
+        ppo=replace(
+            config.ppo,
+            total_timesteps=64,
+            n_envs=1,
+            n_steps=16,
+            batch_size=16,
+            n_epochs=1,
+            eval_every=64,
+            rehearsal_fade_steps=48,
+        ),
+    )
+    weights = []
+    original = ActorRehearsal.update
+
+    def capture_weight(self, policy, *, weight):
+        weights.append(weight)
+        return original(self, policy, weight=weight)
+
+    monkeypatch.setattr(ActorRehearsal, "update", capture_weight)
+    dataset = tmp_path / "data"
+    record_demonstrations(config, dataset)
+    output = tmp_path / "fade"
+    train(config, output, rehearsal_dataset=dataset)
+    assert weights == pytest.approx([2 / 3, 1 / 3])
+    resumed = replace(config, ppo=replace(config.ppo, total_timesteps=80))
+    result = train(
+        resumed,
+        tmp_path / "resumed",
+        resume_model=output / "model.zip",
+        rehearsal_dataset=dataset,
+    )
+    assert weights == pytest.approx([2 / 3, 1 / 3])
+    assert result["trained_timesteps"] == 16
+
+
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
 def test_rehearsal_checkpoint_excludes_data_and_resume_requires_the_same_dataset(tmp_path, device):
     if device == "cuda" and not torch.cuda.is_available():

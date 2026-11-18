@@ -4,11 +4,12 @@ import numpy as np
 import pytest
 import torch
 
-from f1_ai.agents import PursuitAgent
+from f1_ai.agents import PPOAgent, PursuitAgent
+from f1_ai.artifacts import provenance, write_json
 from f1_ai.config import load_config
-from f1_ai.environment import make_env
-from f1_ai.imitation import clone, fit_actor, record_demonstrations, validate_dataset
-from f1_ai.training import create_model
+from f1_ai.environment import NumericCarRacing, make_env
+from f1_ai.imitation import clone, fit_actor, load_dataset, record_demonstrations, validate_dataset
+from f1_ai.training import create_model, load_model
 
 
 def test_validation_circuits_cannot_enter_imitation_dataset():
@@ -38,6 +39,55 @@ def test_dagger_retains_the_initial_and_aggregated_labels(tmp_path):
             assert aggregated["observations"].shape == (8, 16)
             np.testing.assert_array_equal(aggregated["observations"][:4], initial["observations"])
             validate_dataset(dict(aggregated), config)
+
+
+def test_road_student_learns_from_a_corridor_checkpoint_without_reading_its_plan(
+    tmp_path, monkeypatch
+):
+    config = load_config("configs/formula-road-cuda.toml")
+    config = replace(
+        config,
+        environment=replace(config.environment, max_steps=4),
+        circuits=replace(config.circuits, train=(0,), validation=(100,)),
+        ppo=replace(config.ppo, device="cpu"),
+    )
+    teacher_config = replace(
+        config, environment=replace(config.environment, observation_profile="corridor-v4")
+    )
+    teacher_dir = tmp_path / "teacher"
+    teacher_dir.mkdir()
+    checkpoint = teacher_dir / "model.zip"
+    real_plan = NumericCarRacing._track_plan
+
+    def plan_only_for_teacher(env, settings):
+        assert env.config.observation_profile == "corridor-v4"
+        return real_plan(env, settings)
+
+    monkeypatch.setattr(NumericCarRacing, "_track_plan", plan_only_for_teacher)
+    teacher_env = make_env(teacher_config.environment)
+    road_env = make_env(config.environment)
+    try:
+        teacher = create_model(teacher_config, teacher_env)
+        teacher.save(checkpoint)
+        write_json(teacher_dir / "metadata.json", provenance(teacher_config, kind="ppo"))
+        guided, _ = teacher_env.reset(seed=0)
+        road, _ = road_env.reset(seed=0)
+        dataset, output = tmp_path / "dataset", tmp_path / "student"
+        record_demonstrations(config, dataset, teacher_kind="ppo", teacher_model=checkpoint)
+        data = load_dataset(dataset, config)
+        np.testing.assert_array_equal(data["observations"][0], road)
+        np.testing.assert_array_equal(data["actions"][0], PPOAgent(teacher).action(guided))
+        with pytest.raises(ValueError, match="--teacher-model"):
+            clone(config, dataset, output, epochs=1, dagger_rounds=1)
+        clone(config, dataset, output, epochs=1, dagger_rounds=1, teacher_model=checkpoint)
+        with np.load(output / "dataset-round-1.npz", allow_pickle=False) as aggregate:
+            assert aggregate["observations"].shape == (8, 36)
+            assert set(aggregate["seeds"]) == {0}
+        student = load_model(output / "best_model.zip", config)
+        assert road_env.action_space.contains(PPOAgent(student).action(road))
+    finally:
+        road_env.close()
+        teacher_env.close()
 
 
 @pytest.mark.parametrize("bounded", [False, True])

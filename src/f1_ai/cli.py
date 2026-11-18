@@ -49,6 +49,9 @@ def parser() -> argparse.ArgumentParser:
     training.add_argument(
         "--rehearsal-dataset", type=Path, help="Alternar PPO con repaso BC de un dataset train"
     )
+    training.add_argument(
+        "--rehearsal-fade-steps", type=int, help="Pasos hasta reducir a cero el repaso BC"
+    )
     initialization = training.add_mutually_exclusive_group()
     initialization.add_argument(
         "--initial-model", type=Path, help="Inicializar pesos desde un modelo compatible"
@@ -75,13 +78,19 @@ def parser() -> argparse.ArgumentParser:
     demonstrations.add_argument("--output", type=Path, required=True)
     demonstrations.add_argument("--target-speed", type=float, default=30.0)
     demonstrations.add_argument("--lateral-acceleration", type=float, default=8.0)
-    demonstrations.add_argument("--teacher", choices=["pursuit", "racing"], default="pursuit")
+    demonstrations.add_argument(
+        "--teacher", choices=["pursuit", "racing", "ppo"], default="pursuit"
+    )
+    demonstrations.add_argument("--teacher-model", type=Path, help="Checkpoint local del maestro")
     imitation = commands.add_parser("clone", help="Aprender el actor por imitación, antes de PPO")
     imitation.add_argument("--dataset", type=Path, required=True)
     imitation.add_argument("--output", type=Path, required=True)
     imitation.add_argument("--epochs", type=int, default=50)
     imitation.add_argument("--learning-rate", type=float, default=1e-3)
     imitation.add_argument("--dagger-rounds", type=int, default=0)
+    imitation.add_argument(
+        "--teacher-model", type=Path, help="Checkpoint del maestro PPO para DAgger"
+    )
     imitation.add_argument("--seed", type=int)
     replay = commands.add_parser("replay", help="Exportar una vuelta de la red neuronal en MP4")
     replay.add_argument("--model", type=Path, required=True)
@@ -273,6 +282,10 @@ def main():
             if args.smoke:
                 raise ValueError("La prueba smoke fija su propio número de pasos.")
             config = replace(config, ppo=replace(config.ppo, total_timesteps=args.timesteps))
+        if getattr(args, "rehearsal_fade_steps", None) is not None:
+            config = replace(
+                config, ppo=replace(config.ppo, rehearsal_fade_steps=args.rehearsal_fade_steps)
+            )
         match args.command:
             case "plan-reference" | "reference":
                 from f1_ai.racing_controller import FollowerConfig
@@ -365,6 +378,7 @@ def main():
                     target_speed=args.target_speed,
                     lateral_acceleration=args.lateral_acceleration,
                     teacher_kind=args.teacher,
+                    teacher_model=args.teacher_model,
                 )
                 print(json.dumps(result, indent=2))
             case "clone":
@@ -377,6 +391,7 @@ def main():
                     epochs=args.epochs,
                     learning_rate=args.learning_rate,
                     dagger_rounds=args.dagger_rounds,
+                    teacher_model=args.teacher_model,
                 )
                 print(json.dumps(result, indent=2))
             case "replay":
