@@ -120,12 +120,15 @@ def make_training_envs(config: ExperimentConfig) -> VecEnv:
                 braking=settings.braking_curriculum,
                 recovery=settings.recovery_curriculum,
                 launch=settings.launch_curriculum,
+                wide_entry=settings.wide_entry_curriculum,
             )
             info_keywords = (
                 "training_sector",
                 "curriculum_stage",
                 "training_recovery",
                 "training_launch",
+                "training_wide_entry",
+                "training_wide_sector_seconds",
             )
         return TransformReward(
             Monitor(env, info_keywords=info_keywords),

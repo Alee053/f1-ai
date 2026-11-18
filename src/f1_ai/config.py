@@ -155,6 +155,7 @@ class PPOConfig:
     braking_curriculum: bool = False
     recovery_curriculum: bool = False
     launch_curriculum: bool = False
+    wide_entry_curriculum: bool = False
     rear_slip_penalty: float = 0.0
     front_lock_penalty: float = 0.0
     time_progress_mix: float = 0.0
@@ -200,7 +201,12 @@ class PPOConfig:
             raise ValueError("La salida acotada de esta política requiere use_sde.")
         if type(self.corner_curriculum) is not bool:
             raise ValueError("corner_curriculum debe ser booleano.")
-        for name in ("braking_curriculum", "recovery_curriculum", "launch_curriculum"):
+        for name in (
+            "braking_curriculum",
+            "recovery_curriculum",
+            "launch_curriculum",
+            "wide_entry_curriculum",
+        ):
             enabled = getattr(self, name)
             if type(enabled) is not bool or (enabled and not self.corner_curriculum):
                 raise ValueError(f"{name} requiere el currículo de curvas.")
@@ -225,6 +231,8 @@ class ExperimentConfig:
     ppo: PPOConfig
 
     def __post_init__(self):
+        if self.ppo.wide_entry_curriculum and self.environment.reward_profile != "lap-time-v1":
+            raise ValueError("wide_entry_curriculum requiere recompensa lap-time-v1.")
         if self.ppo.time_progress_mix and (
             self.environment.observation_profile not in MAP_OBSERVATIONS
             or self.environment.reward_profile != "lap-time-v1"

@@ -696,6 +696,14 @@ distingue esos episodios.
 reposo. Esos episodios empiezan en la meta y duran hasta cuatro segundos.
 Sirven para practicar la aceleración inicial con los mandos de la red.
 
+`formula-wide-entry-cuda.toml` ensaya entradas por ambos lados del eje
+con la física calibrada y la búsqueda de trazada por tiempo. Con
+`wide_entry_curriculum = true`, parte de los sectores empieza entre
+30 y 50 m antes del ápice y recorre hasta 145 m. En esos sectores se añade
+un bono por llegar antes, siempre que el vehículo complete la distancia sin
+salidas ni bloqueos. La validación sigue usando vueltas completas desde la meta.
+El preset permite entrenar 2.000.896 pasos en lotes de 2.048.
+
 El ajuste opcional `rear_slip_penalty` en `[ppo]` añade un coste al superar
 0,30 de deslizamiento longitudinal en una rueda trasera sobre el asfalto.
 La política conserva el giro y el pedal que haya elegido.

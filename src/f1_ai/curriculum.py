@@ -13,6 +13,9 @@ SECTOR_PROBABILITY = (0.70, 0.55, 0.25)
 SECTOR_METERS = 120.0
 SECTOR_STEPS = 450
 LAUNCH_STEPS = 200
+WIDE_SECTOR_METERS = 145.0
+WIDE_SECTOR_STEPS = 500
+WIDE_SECTOR_TIME_BONUS = 0.10
 
 
 @dataclass(frozen=True)
@@ -21,6 +24,7 @@ class CornerStart:
     stage: int
     braking: bool = False
     recovery: bool = False
+    wide_entry: bool = False
 
     def pose(self, road: CircuitGeometry, plan: RacingPlan) -> tuple[float, float, float, float]:
         rng = np.random.default_rng(self.seed)
@@ -45,6 +49,9 @@ class CornerStart:
             speed_ranges = ((0.95, 1.02), (0.97, 1.09), (0.98, 1.14))
         if self.recovery:
             lead = (14.0, 38.0)
+        if self.wide_entry:
+            lead = (30.0, 50.0)
+            speed_ranges = ((0.86, 0.98), (0.90, 1.02), (0.93, 1.06))
         apex = road.project(plan.centerline[rng.choice(peaks, p=weights)]).distance
         center = road.sample(apex - rng.uniform(*lead))
         direction = road.project(center).tangent
@@ -52,7 +59,13 @@ class CornerStart:
         jitter = (0.25, 0.55, 0.70)[self.stage]
         if self.recovery:
             jitter = 2.0
-        x, y = center + rng.uniform(-jitter, jitter) * right
+        if self.wide_entry:
+            usable_width = plan.half_width_m - plan.vehicle.width_m / 2 - plan.config.road_margin_m
+            upper_fraction = (0.63, 0.69, 0.74)[self.stage]
+            offset = rng.choice((-1, 1)) * usable_width * rng.uniform(0.45, upper_fraction)
+        else:
+            offset = rng.uniform(-jitter, jitter)
+        x, y = center + offset * right
         heading_jitter_deg = (2.0, 3.5, 4.0)[self.stage]
         if self.recovery:
             heading_jitter_deg = 10.0
@@ -79,12 +92,14 @@ class CornerCurriculum(gym.Wrapper):
         braking: bool = False,
         recovery: bool = False,
         launch: bool = False,
+        wide_entry: bool = False,
     ):
         super().__init__(env)
         self.n_envs = n_envs
         self.braking = braking
         self.recovery = recovery
         self.launch = launch
+        self.wide_entry = wide_entry
         self.timesteps = 0
         self.rng = np.random.default_rng(0)
         self.stage = 0
@@ -92,6 +107,9 @@ class CornerCurriculum(gym.Wrapper):
         self.sector_steps = 0
         self.recovery_start = False
         self.launch_start = False
+        self.wide_start = False
+        self.wide_sector_lock = False
+        self.wide_sector_seconds = 0.0
 
     def set_curriculum_timesteps(self, timesteps: int):
         self.timesteps = timesteps
@@ -102,17 +120,27 @@ class CornerCurriculum(gym.Wrapper):
         self.stage = 2 if self.timesteps >= 81_920 else int(self.timesteps >= 32_768)
         self.sector = bool(self.rng.random() < SECTOR_PROBABILITY[self.stage])
         self.launch_start = bool(self.sector and self.launch and self.rng.random() < 0.5)
+        self.wide_start = bool(
+            self.sector and not self.launch_start and self.wide_entry and self.rng.random() < 0.7
+        )
         self.recovery_start = bool(
             self.sector
             and not self.launch_start
+            and not self.wide_start
             and self.recovery
             and self.stage > 0
             and self.rng.random() < 0.5
         )
         self.sector_steps = 0
+        self.wide_sector_lock = False
+        self.wide_sector_seconds = 0.0
         if self.sector and not self.launch_start:
             start = CornerStart(
-                int(self.rng.integers(2**32)), self.stage, self.braking, self.recovery_start
+                int(self.rng.integers(2**32)),
+                self.stage,
+                braking=self.braking,
+                recovery=self.recovery_start,
+                wide_entry=self.wide_start,
             )
             options = {**(options or {}), "corner_start": start}
         obs, info = self.env.reset(seed=seed, options=options)
@@ -125,19 +153,42 @@ class CornerCurriculum(gym.Wrapper):
             "curriculum_stage": self.stage,
             "training_recovery": self.recovery_start,
             "training_launch": self.launch_start,
+            "training_wide_entry": self.wide_start,
+            "training_wide_sector_seconds": self.wide_sector_seconds,
         }
 
     def step(self, action):
         observation, reward, terminated, truncated, info = self.env.step(action)
         self.timesteps += self.n_envs
         self.sector_steps += 1
+        if self.wide_start:
+            self.wide_sector_lock = self.wide_sector_lock or any(info["locked_wheels"])
         if self.sector and not (terminated or truncated):
             meters = info["forward_progress"] * info["track_length"]
-            step_limit = LAUNCH_STEPS if self.launch_start else SECTOR_STEPS
-            if meters >= SECTOR_METERS or self.sector_steps >= step_limit:
-                # Truncar permite al crítico usar la observación final. No se añade bono de vuelta.
+            distance_limit = SECTOR_METERS
+            reason = "sector_limit"
+            if self.wide_start:
+                distance_limit = WIDE_SECTOR_METERS
+                step_limit = WIDE_SECTOR_STEPS
+                reason = "wide_sector_limit"
+            elif self.launch_start:
+                step_limit = LAUNCH_STEPS
+                reason = "launch_limit"
+            else:
+                step_limit = SECTOR_STEPS
+            reached_exit = meters >= distance_limit
+            if reached_exit or self.sector_steps >= step_limit:
+                # El truncamiento permite al crítico usar la observación final.
                 truncated = True
-                reason = "launch_limit" if self.launch_start else "sector_limit"
+                if (
+                    self.wide_start
+                    and reached_exit
+                    and info["off_track_steps"] == 0
+                    and not self.wide_sector_lock
+                ):
+                    self.wide_sector_seconds = info["simulated_seconds"]
+                    reward += (step_limit - self.sector_steps) * WIDE_SECTOR_TIME_BONUS
+                    reason = "wide_sector_complete"
                 info = {**info, "termination_reason": reason}
         return (
             observation,

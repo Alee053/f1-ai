@@ -11,7 +11,7 @@ from f1_ai import imitation
 from f1_ai.agents import PPOAgent
 from f1_ai.artifacts import provenance, write_json
 from f1_ai.config import load_config
-from f1_ai.curriculum import CornerCurriculum, CornerStart
+from f1_ai.curriculum import WIDE_SECTOR_METERS, CornerCurriculum, CornerStart
 from f1_ai.environment import CircuitPool, make_env, observation_contract
 from f1_ai.imitation import validate_dataset
 from f1_ai.plan_features import ReferenceTimeProgress
@@ -153,6 +153,45 @@ def test_corner_spawn_keeps_track_and_starts_with_consistent_velocity(braking, r
         repeated, _ = env.reset(seed=7, options=options)
         np.testing.assert_array_equal(repeated, observation)
         np.testing.assert_array_equal(env.reset(seed=7)[1]["position"], normal["position"])
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize("locked", [False, True])
+def test_wide_entry_curriculum_rewards_clean_exit(monkeypatch, locked):
+    config = load_config("configs/formula-wide-entry-cuda.toml")
+    env = CornerCurriculum(
+        CircuitPool(make_env(config.environment), (7,), shuffle=True), 4, wide_entry=True
+    )
+    try:
+        observation, start = env.reset(seed=42)
+        assert start["training_wide_entry"] and start["training_sector"]
+        assert abs(env.unwrapped.geometry.project(start["position"]).lateral) > 2.0
+        assert env.unwrapped.road_contact_fraction == 1.0
+
+        def advance(_action):
+            return (
+                observation,
+                2.0,
+                False,
+                False,
+                {
+                    **start,
+                    "simulated_seconds": 5.0,
+                    "locked_wheels": (locked, False, False, False),
+                    "forward_progress": (WIDE_SECTOR_METERS + 0.01) / start["track_length"],
+                },
+            )
+
+        env.sector_steps = 249
+        monkeypatch.setattr(env.env, "step", advance)
+        _, reward, terminated, truncated, info = env.step(np.zeros(2, dtype=np.float32))
+        assert truncated and not terminated and not info["lap_complete"]
+        assert info["termination_reason"] == (
+            "wide_sector_limit" if locked else "wide_sector_complete"
+        )
+        assert info["training_wide_sector_seconds"] == (0.0 if locked else 5.0)
+        assert reward == (2.0 if locked else 27.0)
     finally:
         env.close()
 
