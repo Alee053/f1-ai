@@ -107,15 +107,12 @@ def make_training_envs(config: ExperimentConfig) -> VecEnv:
         if settings.front_lock_penalty:
             env = FrontLockPenalty(env, settings.front_lock_penalty)
         env = CircuitPool(env, config.circuits.train, shuffle=True)
+        info_keywords = ()
         if settings.corner_curriculum:
-            monitored = Monitor(
-                CornerCurriculum(env, settings.n_envs, braking=settings.braking_curriculum),
-                info_keywords=("training_sector", "curriculum_stage"),
-            )
-        else:
-            monitored = Monitor(env)
+            env = CornerCurriculum(env, settings.n_envs, braking=settings.braking_curriculum)
+            info_keywords = ("training_sector", "curriculum_stage")
         return TransformReward(
-            monitored,
+            Monitor(env, info_keywords=info_keywords),
             lambda reward: float(reward) * settings.reward_scale,
         )
 
@@ -141,10 +138,11 @@ def train(
         raise ValueError("Elija inicialización de pesos o reanudación, no ambas.")
     if rehearsal_dataset is not None and config.environment.control_profile == RACING_RESIDUAL:
         raise ValueError("El repaso BC usa mandos directos, no correcciones de la trazada.")
+    if resume_model is not None and smoke:
+        raise ValueError("La prueba smoke no permite reanudar un entrenamiento.")
+    source_path = resume_model if resume_model is not None else initial_model
+    source_metadata = read_model_metadata(source_path) if source_path is not None else {}
     if resume_model is not None:
-        if smoke:
-            raise ValueError("La prueba smoke no permite reanudar un entrenamiento.")
-        source_metadata = read_model_metadata(resume_model)
         if bool(source_metadata.get("rehearsal")) != (rehearsal_dataset is not None):
             raise ValueError(
                 "Reanudar conserva la variante de PPO y requiere su dataset de repaso."
@@ -174,15 +172,9 @@ def train(
                 eval_every=1024,
             ),
         )
-    output = create_directory(output)
     settings = config.ppo
-    torch.set_num_threads(settings.torch_threads)
-
-    envs = make_training_envs(config)
     metadata = provenance(config, kind="ppo_smoke" if smoke else "ppo")
-    source_path = resume_model if resume_model is not None else initial_model
     if source_path is not None:
-        source_metadata = read_model_metadata(source_path)
         metadata["initial_policy"] = {
             "model_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
             "source": str(source_path),
@@ -197,6 +189,9 @@ def train(
         if config.environment.reward_profile in LAP_TIME_REWARDS
         else "completed_laps, coverage, lap_time, return"
     )
+    output = create_directory(output)
+    torch.set_num_threads(settings.torch_threads)
+    envs = make_training_envs(config)
     started = time.perf_counter()
     try:
         starting_timesteps = 0

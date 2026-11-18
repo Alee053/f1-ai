@@ -3,10 +3,13 @@
 Avance del proyecto de Inteligencia Artificial SIS-252, UCB Cochabamba, gestión II-2026.
 El objetivo principal es entrenar y evaluar una política neuronal mediante imitación
 y ajuste con PPO en un entorno existente. Gymnasium CarRacing aporta el circuito
-y la física Box2D del perfil `classic`, utilizado en los experimentos de la entrega.
-El perfil experimental `formula-v1` añade dinámica planar en unidades SI inspirada
-en F1 y un modo manual con mando Xbox. Sus parámetros requieren ajuste y no
-representan un monoplaza validado.
+y la física Box2D del perfil `classic`, utilizado en los experimentos iniciales.
+La etapa actual usa `formula-v1`, con dinámica planar en unidades SI, mandos
+directos y práctica de frenada. Sus parámetros aproximan un monoplaza.
+
+- [Política con mandos directos y currículo](#política-con-mandos-directos)
+- [Conducción con mando Xbox](#conducción-manual-con-xbox)
+- [Reproducción cenital o en perspectiva](#v%C3%ADdeo-de-la-pol%C3%ADtica)
 
 La primera etapa incluye observaciones numéricas, un controlador de referencia,
 separación de circuitos por semillas, entrenamiento reproducible y evaluación.

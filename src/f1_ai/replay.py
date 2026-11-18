@@ -31,7 +31,7 @@ class ReplayPhysics(NumericCarRacing):
         return result
 
 
-def _chase_frame(view, surface, env, info, action, method):
+def _chase_frame(view, surface, env, info, action, method, fonts):
     width, height = surface.get_size()
     footer_height = 52
     view.draw(surface.subsurface((0, 0, width, height - footer_height)), env)
@@ -40,9 +40,7 @@ def _chase_frame(view, surface, env, info, action, method):
         speed = f"{info['speed'] * 3.6:.0f} km/h"
     else:
         speed = f"{info['speed']:.1f} unidades/s"
-    pygame.font.init()
-    title = pygame.font.Font(None, 27)
-    details = pygame.font.Font(None, 22)
+    title, details = fonts
     surface.blit(title.render(method, True, (229, 240, 249)), (12, height - 48))
     label = title.render(speed, True, (149, 213, 251))
     surface.blit(label, (width - 12 - label.get_width(), height - 48))
@@ -108,10 +106,14 @@ def record_replay(
     try:
         fps = FPS // stride
         observation, info = env.reset(seed=seed)
+        fonts = None
+        if view is not None:
+            pygame.font.init()
+            fonts = (pygame.font.Font(None, 27), pygame.font.Font(None, 22))
 
         def frame_for(state, action):
             if view is not None:
-                return _chase_frame(view, surface, physics, state, action, label)
+                return _chase_frame(view, surface, physics, state, action, label, fonts)
             return env.render()
 
         frame = frame_for(info, np.zeros(2))

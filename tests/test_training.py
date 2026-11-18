@@ -73,6 +73,19 @@ def test_warm_start_records_source_and_updates_weights(tmp_path: Path):
     assert result["save_load_predictions_identical"]
 
 
+def test_missing_initial_metadata_fails_before_starting_simulators(tmp_path, monkeypatch):
+    config = load_config("configs/ppo.toml")
+
+    def unexpected_environment(_config):
+        pytest.fail("Se creó un simulador antes de validar el modelo inicial.")
+
+    monkeypatch.setattr("f1_ai.training.make_training_envs", unexpected_environment)
+    output = tmp_path / "training"
+    with pytest.raises(FileNotFoundError, match="metadata.json"):
+        train(config, output, initial_model=tmp_path / "missing" / "model.zip")
+    assert not output.exists()
+
+
 def test_sigterm_preserves_a_loadable_checkpoint_during_learning(tmp_path: Path):
     output = tmp_path / "terminated"
     script = """
