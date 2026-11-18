@@ -65,6 +65,23 @@ def test_tyre_combined_force_respects_available_grip(slip, angle):
         assert np.sign(fy) == -np.sign(angle)
 
 
+def test_calibrated_tyre_and_brake_follow_small_commands():
+    original = load_config("configs/formula-corridor-recovery-cuda.toml").environment.formula
+    calibrated = load_config("configs/formula-corridor-calibrated-cuda.toml").environment.formula
+    load = 2000.0
+    angle = np.deg2rad(3.0)
+    _, original_force, original_limit = tyre_forces(original, 0.0, angle, load, 1.0)
+    _, calibrated_force, calibrated_limit = tyre_forces(calibrated, 0.0, angle, load, 1.0)
+    assert calibrated_limit == original_limit
+    assert abs(calibrated_force) > 1.2 * abs(original_force)
+
+    pedal = np.float32(0.16)
+    assert original.brake_force(pedal) == pedal * original.brake_force_limit_n
+    assert calibrated.brake_force(pedal) < original.brake_force(pedal)
+    assert calibrated.brake_force(1.0) > original.brake_force(1.0)
+    assert calibrated.brake_pedal(calibrated.brake_force(pedal)) == pytest.approx(pedal)
+
+
 def test_downforce_improves_lateral_response_without_changing_mass():
     results = []
     for cla in [0, 5]:

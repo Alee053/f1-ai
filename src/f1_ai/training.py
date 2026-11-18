@@ -142,7 +142,12 @@ def make_training_envs(config: ExperimentConfig) -> VecEnv:
 
 
 def _initialize_policy(
-    model: PPO, config: ExperimentConfig, path: Path, source_metadata: dict
+    model: PPO,
+    config: ExperimentConfig,
+    path: Path,
+    source_metadata: dict,
+    *,
+    transfer_vehicle: bool = False,
 ) -> tuple[str, ...]:
     recorded = EnvironmentConfig(**source_metadata["configuration"]["environment"])
     environment = config.environment
@@ -161,6 +166,12 @@ def _initialize_policy(
     ):
         environment = replace(environment, racing_reference=recorded.racing_reference)
         transfers.append("changed_reference_plan")
+    if transfer_vehicle:
+        if environment.vehicle_model != "formula-v1" or recorded.vehicle_model != "formula-v1":
+            raise ValueError("--transfer-vehicle requiere dos perfiles de Formula v1.")
+        if environment.formula != recorded.formula:
+            environment = replace(environment, formula=recorded.formula)
+            transfers.append("changed_formula_parameters")
     source_config = replace(config, environment=environment)
     source = load_model(path, source_config, device=config.ppo.device)
     if type(source.policy.action_dist) is not type(model.policy.action_dist):
@@ -187,9 +198,12 @@ def train(
     initial_model: Path | None = None,
     resume_model: Path | None = None,
     rehearsal_dataset: Path | None = None,
+    transfer_vehicle: bool = False,
 ) -> dict:
     if initial_model is not None and resume_model is not None:
         raise ValueError("Elija inicialización de pesos o reanudación, no ambas.")
+    if transfer_vehicle and initial_model is None:
+        raise ValueError("--transfer-vehicle requiere --initial-model.")
     if rehearsal_dataset is not None and config.environment.control_profile == RACING_RESIDUAL:
         raise ValueError("El repaso BC usa mandos directos, no correcciones de la trazada.")
     if resume_model is not None and smoke:
@@ -270,7 +284,9 @@ def train(
             model = create_model(config, envs, rehearsal=rehearsal_dataset is not None)
         transfers = ()
         if initial_model is not None:
-            transfers = _initialize_policy(model, config, initial_model, source_metadata)
+            transfers = _initialize_policy(
+                model, config, initial_model, source_metadata, transfer_vehicle=transfer_vehicle
+            )
             if transfers:
                 metadata["initial_policy"]["transfer"] = transfers
         if rehearsal_dataset is not None:

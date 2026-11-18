@@ -88,6 +88,20 @@ def test_corridor_preserves_old_inputs_and_transfers_initial_policy(tmp_path):
         )
         with pytest.raises(ValueError, match="configuración de evaluación"):
             _initialize_policy(expanded, incompatible, checkpoint, metadata)
+        assert _initialize_policy(
+            expanded, incompatible, checkpoint, metadata, transfer_vehicle=True
+        ) == ("zero_initialized_corridor_inputs", "changed_formula_parameters")
+        np.testing.assert_allclose(before, PPOAgent(expanded).action(new_obs), atol=1e-6)
+        with pytest.raises(ValueError, match="configuración de evaluación"):
+            load_model(
+                checkpoint,
+                replace(
+                    planned,
+                    environment=replace(
+                        planned.environment, formula=incompatible.environment.formula
+                    ),
+                ),
+            )
     finally:
         old_env.close()
         new_env.close()

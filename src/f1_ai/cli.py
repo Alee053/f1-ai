@@ -58,6 +58,11 @@ def parser() -> argparse.ArgumentParser:
         type=Path,
         help="Conservar pesos, optimizador y contador de un PPO guardado",
     )
+    training.add_argument(
+        "--transfer-vehicle",
+        action="store_true",
+        help="Permitir cambios en la física Formula v1 al usar --initial-model",
+    )
     plot = commands.add_parser("plot", help="Exportar figuras de una evaluación existente")
     plot.add_argument("--evaluation", type=Path, required=True)
     training_plot = commands.add_parser(
@@ -337,6 +342,7 @@ def main():
                             initial_model=args.initial_model,
                             resume_model=args.resume_model,
                             rehearsal_dataset=args.rehearsal_dataset,
+                            transfer_vehicle=args.transfer_vehicle,
                         ),
                         indent=2,
                     )

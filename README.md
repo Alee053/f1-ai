@@ -639,6 +639,25 @@ uv run f1-ai --config configs/formula-corridor-recovery-cuda.toml train \
   --output runs/corridor-recovery
 ```
 
+`formula-corridor-calibrated-cuda.toml` aumenta la ganancia lateral del
+neumático de 10 a 13 y el ClA de 5 a 6 m². El freno conserva el reparto fijo
+por eje, con un 55 % delante, y aplica una curva progresiva al pedal. El
+banco de asfalto seco midió 4,58 g sostenidos en curva a 260 km/h y un pico
+de 5,10 g durante 0,2 s en frenada recta iniciada a 320 km/h.
+
+Con `--transfer-vehicle` se copian los pesos de una política Formula
+para iniciar el entrenamiento con otros parámetros físicos. La corrida
+guarda `initialized_model.zip` para medir el agente antes de entrenarlo
+en la nueva dinámica. La evaluación y la reanudación requieren los
+parámetros físicos del checkpoint.
+
+```bash
+uv run f1-ai --config configs/formula-corridor-calibrated-cuda.toml train \
+  --initial-model runs/corridor-recovery/checkpoints/ppo_65536_steps.zip \
+  --transfer-vehicle --output runs/corridor-calibrated
+uv run f1-ai --config configs/formula-corridor-calibrated-cuda.toml play --camera top
+```
+
 `time_search_passes` en `[environment.racing_reference.plan]` prueba
 desplazamientos suaves de la trazada dentro del corredor. Solo admite
 candidatos dentro de los límites de pista y dirección que mejoran el tiempo
