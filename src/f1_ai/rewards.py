@@ -11,12 +11,62 @@ MINIMUM_PROGRESS_M = 4.0
 NO_PROGRESS_COST = 120.0
 
 
+class RoadLearningReward(gym.Wrapper):
+    """Enseña avance sobre asfalto con un límite de ritmo suave."""
+
+    off_track_steps = 25
+    stall_cost = 24.0
+
+    def __init__(self, env: gym.Env, pace_m_s: float):
+        super().__init__(env)
+        self.pace_m_s = pace_m_s
+        self.previous_progress_m = 0.0
+        self.consecutive_off_track = 0
+
+    def reset(self, *, seed=None, options=None):
+        self.previous_progress_m = 0.0
+        self.consecutive_off_track = 0
+        return self.env.reset(seed=seed, options=options)
+
+    def step(self, action):
+        physics = self.env.unwrapped
+        previous_action = physics.previous_action
+        observation, _, terminated, truncated, info = self.env.step(action)
+        distance = info["forward_progress"] * info["track_length"]
+        gain = distance - self.previous_progress_m
+        self.previous_progress_m = distance
+        contact = physics.road_contact_fraction
+        if contact >= 0.5:
+            self.consecutive_off_track = 0
+            delta = physics.previous_action - previous_action
+            slip_excess = min(2.0, max(0.0, max(map(abs, info["slip_ratios"])) - 0.30))
+            speed_excess = max(0.0, info["speed"] - self.pace_m_s)
+            reward = (
+                gain
+                - 0.04
+                - 0.20 * (1.0 - contact)
+                - 0.04 * float(delta @ delta)
+                - 0.035 * slip_excess**2
+                - 0.003 * speed_excess**2
+            )
+        else:
+            self.consecutive_off_track += 1
+            reward = -0.35
+            if self.consecutive_off_track >= self.off_track_steps and not (terminated or truncated):
+                terminated = True
+                info = {**info, "termination_reason": "off_track"}
+        if terminated:
+            reward += 30.0 if info["lap_complete"] else -12.0
+        return observation, reward, terminated, truncated, info
+
+
 class NoProgressTermination(gym.Wrapper):
     """Acota los episodios de entrenamiento sin avance válido."""
 
-    def __init__(self, env: gym.Env, patience_steps: int):
+    def __init__(self, env: gym.Env, patience_steps: int, *, cost: float = NO_PROGRESS_COST):
         super().__init__(env)
         self.patience_steps = patience_steps
+        self.cost = cost
         self.last_progress_m = 0.0
         self.new_progress_m = 0.0
         self.steps_without_progress = 0
@@ -45,7 +95,7 @@ class NoProgressTermination(gym.Wrapper):
             and self.steps_without_progress >= self.patience_steps
         ):
             terminated = True
-            reward -= NO_PROGRESS_COST
+            reward -= self.cost
             info = {**info, "termination_reason": "no_progress"}
         return observation, reward, terminated, truncated, info
 

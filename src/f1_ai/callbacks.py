@@ -13,10 +13,11 @@ from f1_ai.evaluation import driving_score, evaluate_episode, summarize
 
 
 class DrivingEvaluation(BaseCallback):
-    def __init__(self, config: ExperimentConfig, output: Path):
+    def __init__(self, config: ExperimentConfig, output: Path, *, agent_name: str = "ppo"):
         super().__init__()
         self.config = config
         self.output = output
+        self.agent_name = agent_name
         self.directory = output / "validation"
         self.directory.mkdir()
         self.checkpoints = output / "checkpoints"
@@ -27,7 +28,12 @@ class DrivingEvaluation(BaseCallback):
 
     def _evaluate(self):
         episodes = [
-            evaluate_episode(self.config.environment, PPOAgent(self.model), seed, agent_name="ppo")
+            evaluate_episode(
+                self.config.environment,
+                PPOAgent(self.model),
+                seed,
+                agent_name=self.agent_name,
+            )
             for seed in self.config.circuits.validation
         ]
         summary = summarize(episodes)
@@ -50,7 +56,7 @@ class DrivingEvaluation(BaseCallback):
         )
         write_json(self.directory / f"step-{self.num_timesteps}.json", record)
         if self.num_timesteps > 0:
-            self.model.save(self.checkpoints / f"ppo_{self.num_timesteps}_steps.zip")
+            self.model.save(self.checkpoints / f"{self.agent_name}_{self.num_timesteps}_steps.zip")
         if self.best_score is None or score > self.best_score:
             self.best_score = score
             self.model.save(self.output / "best_model.zip")
@@ -75,6 +81,15 @@ class DrivingEvaluation(BaseCallback):
             )
             self.logger.record("curriculum/recent_episodes", len(recent))
             self.logger.record("curriculum/latest_episode_stage", recent[-1]["curriculum_stage"])
+            if self.config.ppo.road_start_curriculum and self.config.ppo.learning_pace_m_s:
+                sectors = [episode for episode in recent if episode["training_sector"]]
+                if sectors:
+                    clean = sum(
+                        episode["termination_reason"]
+                        in {"road_launch_complete", "road_sector_complete"}
+                        for episode in sectors
+                    )
+                    self.logger.record("curriculum/recent_clean_sector_rate", clean / len(sectors))
             if self.config.ppo.recovery_curriculum:
                 self.logger.record(
                     "curriculum/recent_recovery_episodes",

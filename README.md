@@ -763,6 +763,34 @@ uv run f1-ai --config "$config" evaluate --agents bc \
   --model runs/road-clone-launch/model.zip --split validation --output runs/road-launch-validation
 ```
 
+### Entrenamiento desde cero con ritmo gradual
+
+`configs/formula-road-learning-cuda.toml` inicia PPO con pesos aleatorios,
+60 pistas de entrenamiento y un control cada 49.152 pasos. La recompensa
+mide el avance sobre el asfalto en metros y cobra el tiempo, los cambios
+bruscos, la pérdida de contacto y el patinaje excesivo. `learning_pace_m_s`
+aplica un coste cuadrático por encima del ritmo de práctica. La red conserva
+la capacidad de escoger ambos mandos. El avance por el circuito también se
+ha usado como señal densa en otros simuladores de carreras. [Fuchs et al.](https://arxiv.org/abs/2008.07971)
+
+Los sectores y las salidas cortas reciben un bono si se completan sin
+salidas ni bloqueos. `road_curriculum_scale` multiplica la duración de las
+primeras etapas. Se termina un episodio de entrenamiento después de 25
+pasos consecutivos fuera del asfalto. La evaluación usa la física,
+el horizonte y los criterios de vuelta completa de `lap-time-v1`.
+
+```bash
+config=configs/formula-road-learning-cuda.toml
+uv run f1-ai --config "$config" train --output runs/road-from-random
+uv run f1-ai --config "$config" evaluate --agents ppo --split validation \
+  --model runs/road-from-random/best_model.zip --output runs/road-from-random-validation
+```
+
+El perfil opcional `road-preview-v6` conserva las 36 entradas de `road-v5`
+y añade los dos mandos del paso anterior y el cambio de dirección de la
+pista a 6, 15, 30, 60 y 100 metros. Sus 48 entradas se calculan a partir
+del estado del coche y de la geometría del asfalto.
+
 ### Currículo de curvas
 
 `formula-curriculum-cuda.toml` parte de un checkpoint de mandos directos y sube

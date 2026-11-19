@@ -62,6 +62,42 @@ def test_training_prefers_useful_advancement_to_standing_still():
     assert rolling_return > idle_return
 
 
+def test_paced_reward_makes_progress_useful_and_ends_sustained_excursions():
+    config = load_config("configs/formula-road-cuda.toml")
+    config = replace(
+        config,
+        circuits=replace(config.circuits, train=(0,)),
+        ppo=replace(
+            config.ppo,
+            no_progress_steps=250,
+            learning_pace_m_s=14.0,
+            rear_slip_penalty=0.0,
+            front_lock_penalty=0.0,
+        ),
+    )
+    env = make_training_environment(config)
+    try:
+        returns = []
+        for pedal in (0.0, 0.18):
+            env.reset(seed=42)
+            total = 0.0
+            action = np.array([0.0, pedal], dtype=np.float32)
+            for step in range(config.environment.max_steps):
+                _, reward, terminated, truncated, info = env.step(action)
+                total += reward * config.ppo.gamma**step
+                if terminated or truncated:
+                    break
+            returns.append((total, info))
+        idle, rolling = returns
+        assert idle[1]["termination_reason"] == "no_progress"
+        assert rolling[1]["termination_reason"] == "off_track"
+        assert rolling[1]["off_track_steps"] == 25
+        assert rolling[1]["forward_progress"] > 0.02
+        assert rolling[0] > idle[0]
+    finally:
+        env.close()
+
+
 def test_road_curriculum_places_students_before_curves_without_planning(monkeypatch):
     config = load_config("configs/formula-road-cuda.toml")
     config = replace(
@@ -91,6 +127,34 @@ def test_road_curriculum_places_students_before_curves_without_planning(monkeypa
         pytest.fail("El currículo debe incluir salidas en movimiento.")
     finally:
         env.close()
+
+
+def test_road_preview_adds_turns_and_previous_commands_without_a_plan(monkeypatch):
+    config = load_config("configs/formula-road-cuda.toml")
+    preview = replace(config.environment, observation_profile="road-preview-v6")
+
+    def reject_plan(*args):
+        pytest.fail("La vista geométrica no calcula una trazada.")
+
+    monkeypatch.setattr(NumericCarRacing, "_track_plan", reject_plan)
+    base_env = make_env(config.environment)
+    preview_env = make_env(preview)
+    try:
+        base, _ = base_env.reset(seed=116)
+        obs, _ = preview_env.reset(seed=116)
+        version, names = observation_contract(preview)
+        assert version == 7 and obs.shape == (len(names),) == (48,)
+        np.testing.assert_array_equal(obs[:36], base)
+        np.testing.assert_array_equal(obs[36:38], np.zeros(2))
+        np.testing.assert_allclose(np.linalg.norm(obs[38:].reshape(-1, 2), axis=1), 1, atol=1e-6)
+        action = np.array([0.18, 0.4], dtype=np.float32)
+        base, *_ = base_env.step(action)
+        obs, *_ = preview_env.step(action)
+        np.testing.assert_array_equal(obs[:36], base)
+        np.testing.assert_array_equal(obs[36:38], action)
+    finally:
+        preview_env.close()
+        base_env.close()
 
 
 def test_planned_policy_controls_steering_and_pedal_directly():

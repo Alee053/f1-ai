@@ -30,6 +30,15 @@ class CorridorFeatures:
         relative = (points - position) @ np.column_stack((right, forward))
         return (relative / (PREVIEW_M + TRACK_WIDTH)[:, None, None]).ravel()
 
+    def road_turns(self, distance, tangent):
+        """Cambios de dirección del asfalto relativos a la tangente local."""
+        road = self.road
+        stations = (distance + PREVIEW_M) % road.length
+        segment = np.searchsorted(road.cumulative, stations, side="right") - 1
+        future = road.tangents[segment]
+        right = np.array([tangent[1], -tangent[0]])
+        return (future @ np.column_stack((right, tangent))).ravel()
+
 
 class ReferenceTimeProgress:
     """Tiempo acumulado de referencia en estaciones equiespaciadas del eje."""

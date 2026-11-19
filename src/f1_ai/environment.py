@@ -16,6 +16,8 @@ from f1_ai.config import (
     RACING_RESIDUAL,
     REFERENCE_OBSERVATIONS,
     ROAD_OBSERVATION,
+    ROAD_OBSERVATIONS,
+    ROAD_PREVIEW_OBSERVATION,
     EnvironmentConfig,
     ReferenceDrivingConfig,
 )
@@ -86,9 +88,17 @@ ROAD_EDGE_NAMES = tuple(
 )
 CORRIDOR_OBSERVATION_NAMES = (*PLANNED_OBSERVATION_NAMES, *ROAD_EDGE_NAMES)
 ROAD_OBSERVATION_NAMES = (*VEHICLE_OBSERVATION_NAMES, *ROAD_EDGE_NAMES)
+ROAD_PREVIEW_OBSERVATION_NAMES = (
+    *ROAD_OBSERVATION_NAMES,
+    "previous_steering",
+    "previous_pedal",
+    *(f"road_turn_{int(distance)}_{axis}" for distance in PREVIEW_M for axis in ("sin", "cos")),
+)
 
 
 def _direct_observation_contract(config: EnvironmentConfig) -> tuple[int, tuple[str, ...]]:
+    if config.observation_profile == ROAD_PREVIEW_OBSERVATION:
+        return 7, ROAD_PREVIEW_OBSERVATION_NAMES
     if config.observation_profile == ROAD_OBSERVATION:
         return 6, ROAD_OBSERVATION_NAMES
     if config.observation_profile == CORRIDOR_OBSERVATION:
@@ -169,7 +179,7 @@ class NumericCarRacing(CarRacing):
         velocity = np.array(hull.linearVelocity)
         profile = self.config.observation_profile
         planned = profile in REFERENCE_OBSERVATIONS
-        road_only = profile == ROAD_OBSERVATION
+        road_only = profile in ROAD_OBSERVATIONS
         racing = profile != "legacy"
         lookahead = RACING_LOOKAHEAD_METERS if racing else LOOKAHEAD_METERS
         if planned:
@@ -196,13 +206,17 @@ class NumericCarRacing(CarRacing):
             if not (planned or road_only):
                 extra.extend(self.previous_action)
         corridor = ()
-        if profile in {CORRIDOR_OBSERVATION, ROAD_OBSERVATION}:
+        if profile == CORRIDOR_OBSERVATION or road_only:
             if self._corridor_features is None:
                 angles = np.array([tile[1] for tile in self.track])
                 self._corridor_features = CorridorFeatures(geometry, angles)
             corridor = self._corridor_features.observation(
                 projection.distance, position, forward, right
             )
+        preview = ()
+        if profile == ROAD_PREVIEW_OBSERVATION:
+            turns = self._corridor_features.road_turns(projection.distance, projection.tangent)
+            preview = (*self.previous_action, *turns)
         state = np.array(
             [
                 np.dot(velocity, forward) / self.config.forward_speed_scale,
@@ -216,6 +230,7 @@ class NumericCarRacing(CarRacing):
                 *(extra if planned else waypoints),
                 *(waypoints if planned else extra),
                 *corridor,
+                *preview,
             ],
             dtype=np.float32,
         )
@@ -235,7 +250,8 @@ class NumericCarRacing(CarRacing):
             or self.config.observation_profile not in MAP_OBSERVATIONS
             or self.config.control_profile != "direct"
             or (
-                isinstance(start, RoadStart) and self.config.observation_profile != ROAD_OBSERVATION
+                isinstance(start, RoadStart)
+                and self.config.observation_profile not in ROAD_OBSERVATIONS
             )
         ):
             raise ValueError("La salida de sector requiere el currículo de Formula directo.")

@@ -11,6 +11,7 @@ from f1_ai.environment import (
     PLANNED_OBSERVATION_NAMES,
     RACING_OBSERVATION_NAMES,
     ROAD_OBSERVATION_NAMES,
+    ROAD_PREVIEW_OBSERVATION_NAMES,
     WAYPOINT_SCALE,
 )
 from f1_ai.vehicle import GRAVITY, aerodynamic_forces
@@ -118,6 +119,7 @@ class PPOAgent:
                 PLANNED_OBSERVATION_NAMES,
                 CORRIDOR_OBSERVATION_NAMES,
                 ROAD_OBSERVATION_NAMES,
+                ROAD_PREVIEW_OBSERVATION_NAMES,
             )
         }
         if model.observation_space.shape not in valid_shapes or model.action_space.shape != (2,):

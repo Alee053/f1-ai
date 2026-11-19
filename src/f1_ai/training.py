@@ -38,6 +38,7 @@ from f1_ai.rewards import (
     NoProgressTermination,
     RearSlipPenalty,
     RoadContactPenalty,
+    RoadLearningReward,
     TimeProgressReward,
 )
 from f1_ai.supervision import ActorRehearsal, RehearsalPPO
@@ -110,6 +111,8 @@ def create_model(config: ExperimentConfig, env: Env | VecEnv, *, rehearsal: bool
 def make_training_environment(config: ExperimentConfig) -> Env:
     settings = config.ppo
     env = make_env(config.environment)
+    if settings.learning_pace_m_s:
+        env = RoadLearningReward(env, settings.learning_pace_m_s)
     if settings.time_progress_mix:
         env = TimeProgressReward(env, settings.time_progress_mix)
     if settings.rear_slip_penalty:
@@ -129,6 +132,8 @@ def make_training_environment(config: ExperimentConfig) -> Env:
             launch=settings.launch_curriculum,
             wide_entry=settings.wide_entry_curriculum,
             road_starts=settings.road_start_curriculum,
+            road_stage_scale=settings.road_curriculum_scale,
+            road_sector_bonus=12.0 if settings.learning_pace_m_s else 0.0,
         )
         info_keywords = (
             "training_sector",
@@ -139,7 +144,13 @@ def make_training_environment(config: ExperimentConfig) -> Env:
             "training_wide_sector_seconds",
         )
     if settings.no_progress_steps:
-        env = NoProgressTermination(env, settings.no_progress_steps)
+        if settings.learning_pace_m_s:
+            env = NoProgressTermination(
+                env, settings.no_progress_steps, cost=RoadLearningReward.stall_cost
+            )
+        else:
+            env = NoProgressTermination(env, settings.no_progress_steps)
+    if settings.no_progress_steps or settings.learning_pace_m_s:
         info_keywords = (*info_keywords, "termination_reason")
     return TransformReward(
         Monitor(env, info_keywords=info_keywords),
