@@ -285,7 +285,6 @@ class ExperimentConfig:
             raise ValueError("learning_pace_m_s requiere un perfil vial sin trazada.")
         if self.ppo.road_start_curriculum and (
             self.environment.observation_profile not in ROAD_OBSERVATIONS
-            or self.ppo.braking_curriculum
             or self.ppo.recovery_curriculum
             or self.ppo.wide_entry_curriculum
             or self.ppo.time_progress_mix

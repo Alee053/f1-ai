@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import gymnasium as gym
 import numpy as np
 
-from f1_ai.geometry import CircuitGeometry
+from f1_ai.geometry import CircuitGeometry, TurnPreview
 from f1_ai.racing_line import RacingPlan
 
 SECTOR_PROBABILITY = (0.70, 0.55, 0.25)
@@ -20,6 +20,10 @@ ROAD_SECTOR_PROBABILITY = (0.85, 0.65, 0.35)
 ROAD_LAUNCH_PROBABILITY = (0.20, 0.35, 0.50)
 ROAD_SECTOR_METERS = (55.0, 90.0, 120.0)
 ROAD_LAUNCH_METERS = 18.0
+ROAD_BRAKING_SECTOR_PROBABILITY = (0.85, 0.80, 0.75)
+ROAD_BRAKING_SECTOR_METERS = (95.0, 110.0, 135.0)
+ROAD_BRAKING_SPEED_RANGES = ((16.0, 22.0), (19.0, 26.0), (22.0, 31.0))
+CURRICULUM_FINAL_STAGE_STEPS = 81_920
 
 
 @dataclass(frozen=True)
@@ -89,13 +93,21 @@ class CornerStart:
 class RoadStart:
     seed: int
     stage: int
+    braking: bool = False
 
     def pose(self, road: CircuitGeometry) -> tuple[float, float, float, float]:
         rng = np.random.default_rng(self.seed)
-        turns = np.linalg.norm(road.tangents - np.roll(road.tangents, 1, axis=0), axis=1)
-        corners = np.flatnonzero(turns >= np.quantile(turns, 0.75))
-        apex = road.cumulative[rng.choice(corners)]
-        position = road.sample(apex - rng.uniform(18.0, 42.0))
+        braking_station = self._braking_station(road, rng) if self.braking else None
+        if braking_station is None:
+            turns = np.linalg.norm(road.tangents - np.roll(road.tangents, 1, axis=0), axis=1)
+            corners = np.flatnonzero(turns >= np.quantile(turns, 0.75))
+            apex = road.cumulative[rng.choice(corners)]
+            station = apex - rng.uniform(18.0, 42.0)
+            speed_ranges = ((7.0, 13.0), (9.0, 17.0), (10.0, 21.0))
+        else:
+            station = braking_station
+            speed_ranges = ROAD_BRAKING_SPEED_RANGES
+        position = road.sample(station)
         direction = road.project(position).tangent
         right = np.array([direction[1], -direction[0]])
         lateral_range = (0.3, 0.8, 1.4)[self.stage]
@@ -104,9 +116,20 @@ class RoadStart:
             rng.uniform(-yaw_range, yaw_range)
         )
         x, y = position + right * rng.uniform(-lateral_range, lateral_range)
-        speed_ranges = ((7.0, 13.0), (9.0, 17.0), (10.0, 21.0))
         speed = rng.uniform(*speed_ranges[self.stage])
         return heading, float(x), float(y), float(speed)
+
+    @staticmethod
+    def _braking_station(road: CircuitGeometry, rng: np.random.Generator) -> float | None:
+        preview = TurnPreview(road)
+        approaches = [
+            station
+            for station in road.cumulative[:-1]
+            if preview.ahead(station, 24.0) <= math.radians(10.0)
+            and preview.ahead(station, 62.0) >= math.radians(34.0)
+        ]
+        # Un circuito sin una aproximación recta usa la salida de sector habitual.
+        return float(rng.choice(approaches)) if approaches else None
 
 
 class CornerCurriculum(gym.Wrapper):
@@ -132,6 +155,7 @@ class CornerCurriculum(gym.Wrapper):
         self.launch = launch
         self.wide_entry = wide_entry
         self.road_starts = road_starts
+        self.road_braking = road_starts and braking
         self.stage_scale = road_stage_scale if road_starts else 1
         self.road_sector_bonus = road_sector_bonus if road_starts else 0.0
         self.timesteps = 0
@@ -152,9 +176,18 @@ class CornerCurriculum(gym.Wrapper):
         if seed is not None:
             self.rng = np.random.default_rng(np.random.SeedSequence([seed, 159]))
         stage_steps = self.timesteps // self.stage_scale
-        self.stage = 2 if stage_steps >= 81_920 else int(stage_steps >= 32_768)
-        sector_probability = ROAD_SECTOR_PROBABILITY if self.road_starts else SECTOR_PROBABILITY
-        launch_probability = ROAD_LAUNCH_PROBABILITY[self.stage] if self.road_starts else 0.5
+        self.stage = (
+            2 if stage_steps >= CURRICULUM_FINAL_STAGE_STEPS else int(stage_steps >= 32_768)
+        )
+        if self.road_braking:
+            sector_probability = ROAD_BRAKING_SECTOR_PROBABILITY
+            launch_probability = 0.22
+        elif self.road_starts:
+            sector_probability = ROAD_SECTOR_PROBABILITY
+            launch_probability = ROAD_LAUNCH_PROBABILITY[self.stage]
+        else:
+            sector_probability = SECTOR_PROBABILITY
+            launch_probability = 0.5
         self.sector = bool(self.rng.random() < sector_probability[self.stage])
         self.launch_start = bool(
             self.sector and self.launch and self.rng.random() < launch_probability
@@ -176,7 +209,7 @@ class CornerCurriculum(gym.Wrapper):
         if self.sector and not self.launch_start:
             pose_seed = int(self.rng.integers(2**32))
             if self.road_starts:
-                start = RoadStart(pose_seed, self.stage)
+                start = RoadStart(pose_seed, self.stage, braking=self.road_braking)
             else:
                 start = CornerStart(
                     pose_seed,
@@ -221,7 +254,8 @@ class CornerCurriculum(gym.Wrapper):
                 step_limit = LAUNCH_STEPS
                 reason = "launch_limit"
             elif self.road_starts:
-                distance_limit = ROAD_SECTOR_METERS[self.stage]
+                distances = ROAD_BRAKING_SECTOR_METERS if self.road_braking else ROAD_SECTOR_METERS
+                distance_limit = distances[self.stage]
                 step_limit = SECTOR_STEPS
                 reason = "road_sector_limit"
             else:

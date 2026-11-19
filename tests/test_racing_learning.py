@@ -14,7 +14,7 @@ from f1_ai.artifacts import provenance, write_json
 from f1_ai.config import load_config
 from f1_ai.curriculum import WIDE_SECTOR_METERS, CornerCurriculum, CornerStart
 from f1_ai.environment import CircuitPool, NumericCarRacing, make_env, observation_contract
-from f1_ai.geometry import CircuitGeometry
+from f1_ai.geometry import CircuitGeometry, TurnPreview
 from f1_ai.imitation import validate_dataset
 from f1_ai.plan_features import ReferenceTimeProgress
 from f1_ai.racing_line import ReferenceConfig
@@ -189,7 +189,10 @@ def test_paced_reward_makes_progress_useful_and_ends_sustained_excursions():
         env.close()
 
 
-def test_road_curriculum_places_students_before_curves_without_planning(monkeypatch):
+@pytest.mark.parametrize(("braking", "speed_range"), [(False, (6, 13.5)), (True, (15, 22.5))])
+def test_road_curriculum_places_students_before_curves_without_planning(
+    monkeypatch, braking, speed_range
+):
     config = load_config("configs/formula-road-cuda.toml")
     config = replace(
         config,
@@ -198,6 +201,7 @@ def test_road_curriculum_places_students_before_curves_without_planning(monkeypa
             config.ppo,
             corner_curriculum=True,
             road_start_curriculum=True,
+            braking_curriculum=braking,
             launch_curriculum=True,
         ),
     )
@@ -212,8 +216,13 @@ def test_road_curriculum_places_students_before_curves_without_planning(monkeypa
             observation, info = env.reset(seed=seed)
             if info["training_sector"] and not info["training_launch"]:
                 assert observation.shape == (36,)
-                assert 6.0 <= info["speed"] <= 13.5
+                assert speed_range[0] <= info["speed"] <= speed_range[1]
                 assert env.unwrapped.road_contact_fraction >= 0.5
+                if braking:
+                    road = TurnPreview(env.unwrapped.geometry)
+                    station = env.unwrapped.progress.start
+                    assert road.ahead(station, 24.0) < np.deg2rad(11.0)
+                    assert road.ahead(station, 62.0) > np.deg2rad(33.0)
                 return
         pytest.fail("El currículo debe incluir salidas en movimiento.")
     finally:
