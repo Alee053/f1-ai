@@ -48,6 +48,33 @@ class CircuitGeometry:
         return self.points[indices] + t[..., None] * self.segments[indices]
 
 
+class TurnPreview:
+    """Giro acumulado del asfalto en un intervalo, incluyendo el cierre de vuelta."""
+
+    def __init__(self, road: CircuitGeometry):
+        self.length = road.length
+        tangent = road.tangents
+        following = np.roll(tangent, -1, axis=0)
+        cross = tangent[:, 0] * following[:, 1] - tangent[:, 1] * following[:, 0]
+        dot = np.sum(tangent * following, axis=1)
+        accumulated = np.r_[0.0, np.cumsum(np.abs(np.arctan2(cross, dot)))]
+        blend = np.minimum(2.0, road.lengths / 2)
+        self.stations = np.r_[
+            0.0,
+            np.column_stack((road.cumulative[1:] - blend, road.cumulative[1:])).ravel(),
+        ]
+        self.angles = np.r_[0.0, np.column_stack((accumulated[:-1], accumulated[1:])).ravel()]
+
+    def ahead(self, distance: float, lookahead_m: float) -> float:
+        start = distance % self.length
+        laps, end = divmod(start + lookahead_m, self.length)
+        return float(
+            laps * self.angles[-1]
+            + np.interp(end, self.stations, self.angles)
+            - np.interp(start, self.stations, self.angles)
+        )
+
+
 class LapProgress:
     """Evita premiar oscilaciones, marcha atrás o saltos entre segmentos distantes."""
 

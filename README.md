@@ -805,6 +805,16 @@ uv run f1-ai --config "$fast" evaluate --agents ppo --split validation \
   --model runs/road-fast/checkpoints/ppo_245760_steps.zip --output runs/road-fast-validation
 ```
 
+`learning_straight_pace_m_s` eleva el umbral del coste de velocidad cuando
+los próximos 50 metros de asfalto acumulan hasta 12° de giro. Entre 12° y
+30° el umbral vuelve gradualmente a `learning_pace_m_s`. La recompensa de
+entrenamiento calcula ese giro a partir de la geometría del asfalto.
+
+Para ajustar el pedal de un piloto existente, `pedal_only = true` congela
+las capas del actor y los pesos de la salida de giro. PPO sigue ajustando
+la salida del pedal y el crítico. La política decide ambos mandos durante
+la evaluación.
+
 El perfil opcional `road-preview-v6` conserva las 36 entradas de `road-v5`
 y añade los dos mandos del paso anterior y el cambio de dirección de la
 pista a 6, 15, 30, 60 y 100 metros. Sus 48 entradas se calculan a partir

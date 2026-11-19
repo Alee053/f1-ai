@@ -112,7 +112,11 @@ def make_training_environment(config: ExperimentConfig) -> Env:
     settings = config.ppo
     env = make_env(config.environment)
     if settings.learning_pace_m_s:
-        env = RoadLearningReward(env, settings.learning_pace_m_s)
+        env = RoadLearningReward(
+            env,
+            settings.learning_pace_m_s,
+            straight_pace_m_s=settings.learning_straight_pace_m_s,
+        )
     if settings.time_progress_mix:
         env = TimeProgressReward(env, settings.time_progress_mix)
     if settings.rear_slip_penalty:
@@ -217,6 +221,25 @@ def _initialize_policy(
     return tuple(transfers)
 
 
+def _freeze_steering(model: PPO) -> None:
+    policy = model.policy
+    if (
+        list(policy.features_extractor.parameters())
+        or policy.action_net.weight.shape[0] != 2
+        or policy.log_std.shape[-1] != 2
+        or any(group["weight_decay"] != 0 for group in policy.optimizer.param_groups)
+    ):
+        raise ValueError("pedal_only requiere el actor MLP directo de PPO.")
+    policy.mlp_extractor.policy_net.requires_grad_(False)
+    # La fila 0 calcula el giro y la fila 1 calcula el pedal.
+    weight_mask = policy.action_net.weight.new_tensor([[0.0], [1.0]])
+    bias_mask = policy.action_net.bias.new_tensor([0.0, 1.0])
+    noise_mask = policy.log_std.new_tensor([0.0, 1.0])
+    policy.action_net.weight.register_hook(lambda gradient: gradient * weight_mask)
+    policy.action_net.bias.register_hook(lambda gradient: gradient * bias_mask)
+    policy.log_std.register_hook(lambda gradient: gradient * noise_mask)
+
+
 def train(
     config: ExperimentConfig,
     output: Path,
@@ -238,6 +261,8 @@ def train(
     if resume_model is not None and smoke:
         raise ValueError("La prueba smoke no permite reanudar un entrenamiento.")
     source_path = resume_model if resume_model is not None else initial_model
+    if config.ppo.pedal_only and source_path is None:
+        raise ValueError("pedal_only requiere un checkpoint con giro aprendido.")
     source_metadata = read_model_metadata(source_path) if source_path is not None else {}
     if source_metadata.get("kind") == "sac":
         raise ValueError("Un checkpoint SAC no puede inicializar una política PPO.")
@@ -320,6 +345,8 @@ def train(
             )
             if transfers:
                 metadata["initial_policy"]["transfer"] = transfers
+        if settings.pedal_only:
+            _freeze_steering(model)
         if rehearsal_dataset is not None:
             from f1_ai.imitation import load_dataset
 

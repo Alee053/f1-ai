@@ -161,6 +161,8 @@ class PPOConfig:
     road_start_curriculum: bool = False
     road_curriculum_scale: int = 1
     learning_pace_m_s: float = 0.0
+    learning_straight_pace_m_s: float = 0.0
+    pedal_only: bool = False
     rear_slip_penalty: float = 0.0
     front_lock_penalty: float = 0.0
     time_progress_mix: float = 0.0
@@ -244,6 +246,20 @@ class PPOConfig:
         ):
             raise ValueError("learning_pace_m_s debe pertenecer a [0, 65].")
         if (
+            type(self.learning_straight_pace_m_s) not in (int, float)
+            or not 0 <= self.learning_straight_pace_m_s <= 65
+        ):
+            raise ValueError("learning_straight_pace_m_s debe pertenecer a [0, 65].")
+        if (
+            self.learning_straight_pace_m_s
+            and not 0 < self.learning_pace_m_s <= self.learning_straight_pace_m_s
+        ):
+            raise ValueError(
+                "learning_straight_pace_m_s requiere un ritmo base positivo menor o igual."
+            )
+        if type(self.pedal_only) is not bool:
+            raise ValueError("pedal_only debe ser booleano.")
+        if (
             type(self.sde_sample_freq) is not int
             or self.sde_sample_freq < -1
             or self.sde_sample_freq == 0
@@ -258,6 +274,8 @@ class ExperimentConfig:
     ppo: PPOConfig
 
     def __post_init__(self):
+        if self.ppo.pedal_only and self.environment.control_profile != "direct":
+            raise ValueError("pedal_only requiere una política de mandos directos.")
         if self.ppo.learning_pace_m_s and (
             self.environment.observation_profile not in ROAD_OBSERVATIONS
             or self.environment.control_profile != "direct"

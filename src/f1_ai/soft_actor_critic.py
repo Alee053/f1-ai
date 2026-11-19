@@ -40,6 +40,8 @@ SAC_SETTINGS = {
 
 def train_sac(config: ExperimentConfig, output: Path, *, resume_model: Path | None = None) -> dict:
     settings = config.ppo
+    if settings.pedal_only:
+        raise ValueError("pedal_only requiere entrenamiento PPO.")
     if (
         config.environment.observation_profile not in ROAD_OBSERVATIONS
         or config.environment.control_profile != "direct"

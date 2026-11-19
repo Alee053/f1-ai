@@ -1,14 +1,20 @@
 """Objetivo de tiempo con costes menores por controles bruscos y slip excesivo."""
 
+from math import radians
+
 import gymnasium as gym
 import numpy as np
 
 from f1_ai.config import ReferenceDrivingConfig
+from f1_ai.geometry import TurnPreview
 from f1_ai.plan_features import ReferenceTimeProgress, track_plan
 
 LAP_PROGRESS_POINTS = 1000.0
 MINIMUM_PROGRESS_M = 4.0
 NO_PROGRESS_COST = 120.0
+STRAIGHT_LOOKAHEAD_M = 50.0
+STRAIGHT_TURN_ANGLE = radians(12.0)
+CURVE_TURN_ANGLE = radians(30.0)
 
 
 class RoadLearningReward(gym.Wrapper):
@@ -17,16 +23,21 @@ class RoadLearningReward(gym.Wrapper):
     off_track_steps = 25
     stall_cost = 24.0
 
-    def __init__(self, env: gym.Env, pace_m_s: float):
+    def __init__(self, env: gym.Env, pace_m_s: float, *, straight_pace_m_s: float = 0.0):
         super().__init__(env)
         self.pace_m_s = pace_m_s
+        self.straight_pace_m_s = straight_pace_m_s
+        self.turn_preview = None
         self.previous_progress_m = 0.0
         self.consecutive_off_track = 0
 
     def reset(self, *, seed=None, options=None):
         self.previous_progress_m = 0.0
         self.consecutive_off_track = 0
-        return self.env.reset(seed=seed, options=options)
+        observation, info = self.env.reset(seed=seed, options=options)
+        if self.straight_pace_m_s:
+            self.turn_preview = TurnPreview(self.env.unwrapped.geometry)
+        return observation, info
 
     def step(self, action):
         physics = self.env.unwrapped
@@ -40,7 +51,15 @@ class RoadLearningReward(gym.Wrapper):
             self.consecutive_off_track = 0
             delta = physics.previous_action - previous_action
             slip_excess = min(2.0, max(0.0, max(map(abs, info["slip_ratios"])) - 0.30))
-            speed_excess = max(0.0, info["speed"] - self.pace_m_s)
+            pace = self.pace_m_s
+            if self.turn_preview is not None:
+                progress = physics.progress
+                turn = self.turn_preview.ahead(
+                    progress.start + progress.previous, STRAIGHT_LOOKAHEAD_M
+                )
+                fraction = (CURVE_TURN_ANGLE - turn) / (CURVE_TURN_ANGLE - STRAIGHT_TURN_ANGLE)
+                pace += (self.straight_pace_m_s - pace) * min(1.0, max(0.0, fraction))
+            speed_excess = max(0.0, info["speed"] - pace)
             reward = (
                 gain
                 - 0.04

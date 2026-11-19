@@ -2,6 +2,7 @@ import json
 from dataclasses import replace
 from types import SimpleNamespace
 
+import gymnasium as gym
 import numpy as np
 import pytest
 import torch
@@ -13,6 +14,7 @@ from f1_ai.artifacts import provenance, write_json
 from f1_ai.config import load_config
 from f1_ai.curriculum import WIDE_SECTOR_METERS, CornerCurriculum, CornerStart
 from f1_ai.environment import CircuitPool, NumericCarRacing, make_env, observation_contract
+from f1_ai.geometry import CircuitGeometry
 from f1_ai.imitation import validate_dataset
 from f1_ai.plan_features import ReferenceTimeProgress
 from f1_ai.racing_line import ReferenceConfig
@@ -20,6 +22,7 @@ from f1_ai.rewards import (
     FrontLockPenalty,
     RearSlipPenalty,
     RoadContactPenalty,
+    RoadLearningReward,
     lap_time_step_reward,
 )
 from f1_ai.training import (
@@ -60,6 +63,94 @@ def test_training_prefers_useful_advancement_to_standing_still():
     assert rolling["termination_reason"] == "off_track"
     assert rolling["forward_progress"] > 0.05
     assert rolling_return > idle_return
+
+
+@pytest.mark.parametrize(("distance", "reward_delta"), [(10.0, 0.003 * 7**2), (60.0, 0.0)])
+def test_extra_pace_only_relaxes_the_speed_cost_on_straights(distance, reward_delta):
+    class RoadSample(gym.Env):
+        def __init__(self):
+            self.geometry = CircuitGeometry(np.array([[0, 0], [90, 0], [90, 80], [0, 80]]))
+            self.progress = SimpleNamespace(start=0.0, previous=distance)
+            self.road_contact_fraction = 1.0
+
+        def reset(self, *, seed=None, options=None):
+            self.previous_action = np.zeros(2)
+            return np.zeros(2), {}
+
+        def step(self, action):
+            self.previous_action = action.copy()
+            return (
+                np.zeros(2),
+                0.0,
+                False,
+                False,
+                {
+                    "forward_progress": 0.01,
+                    "track_length": self.geometry.length,
+                    "speed": 24.0,
+                    "slip_ratios": (0.0, 0.0, 0.0, 0.0),
+                },
+            )
+
+    command = np.array([0.1, 0.2])
+    rewards = []
+    for straight_pace in (0.0, 24.0):
+        env = RoadLearningReward(RoadSample(), 17.0, straight_pace_m_s=straight_pace)
+        env.reset()
+        rewards.append(env.step(command)[1])
+        np.testing.assert_array_equal(env.unwrapped.previous_action, command)
+    assert rewards[1] - rewards[0] == pytest.approx(reward_delta)
+
+
+def test_pedal_only_keeps_the_learned_steering_on_resume(tmp_path):
+    base = load_config("configs/formula-road-cuda.toml")
+    base = replace(
+        base,
+        environment=replace(base.environment, max_steps=8),
+        circuits=replace(base.circuits, train=(0,), validation=(100,)),
+        ppo=replace(
+            base.ppo,
+            device="cpu",
+            vec_env="dummy",
+            n_envs=1,
+            n_steps=16,
+            batch_size=16,
+            n_epochs=1,
+            total_timesteps=32,
+            eval_every=32,
+        ),
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    env = make_env(base.environment)
+    try:
+        model = create_model(base, env)
+        actor = model.policy
+        model.save(source / "model.zip")
+        write_json(source / "metadata.json", provenance(base, kind="ppo"))
+    finally:
+        env.close()
+
+    config = replace(base, ppo=replace(base.ppo, pedal_only=True))
+    output = tmp_path / "pedal"
+    with pytest.raises(ValueError, match="checkpoint con giro aprendido"):
+        train(config, output)
+    train(config, output, initial_model=source / "model.zip")
+    resumed = replace(config, ppo=replace(config.ppo, total_timesteps=48))
+    continuation = tmp_path / "continued"
+    train(resumed, continuation, resume_model=output / "model.zip")
+    trained = load_model(continuation / "model.zip", config).policy
+    for initial, current in zip(
+        actor.mlp_extractor.policy_net.parameters(),
+        trained.mlp_extractor.policy_net.parameters(),
+        strict=True,
+    ):
+        torch.testing.assert_close(initial, current, rtol=0, atol=0)
+    torch.testing.assert_close(
+        actor.action_net.weight[0], trained.action_net.weight[0], rtol=0, atol=0
+    )
+    torch.testing.assert_close(actor.action_net.bias[0], trained.action_net.bias[0], rtol=0, atol=0)
+    assert not torch.equal(actor.action_net.weight[1], trained.action_net.weight[1])
 
 
 def test_paced_reward_makes_progress_useful_and_ends_sustained_excursions():
