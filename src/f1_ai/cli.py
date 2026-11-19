@@ -124,6 +124,7 @@ def parser() -> argparse.ArgumentParser:
     replay.add_argument("--output", type=Path, required=True)
     replay.add_argument("--seed", type=int, default=100)
     replay.add_argument("--device", choices=["cpu", "cuda"])
+    replay.add_argument("--track", type=Path, help="Circuito cerrado en metros, en formato JSON")
     play = commands.add_parser("play", help="Conducir con mando Xbox o teclado y ajustar la física")
     play.add_argument("--seed", type=int, default=0)
     play.add_argument("--output", type=Path)
@@ -465,6 +466,7 @@ def main():
                             camera=args.camera,
                             grid_m=args.grid_meters,
                             device=args.device,
+                            track=args.track,
                         ),
                         indent=2,
                     )

@@ -1,12 +1,14 @@
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
-from gymnasium.envs.box2d.car_racing import CarRacing
+from gymnasium.envs.box2d.car_racing import PLAYFIELD, TRACK_WIDTH, CarRacing
 from gymnasium.utils.env_checker import check_env
 
 from f1_ai.config import EnvironmentConfig, load_config
 from f1_ai.environment import CircuitPool, make_env
+from f1_ai.track_layout import TrackLayout
 
 
 def test_gymnasium_contract_and_no_internal_rgb_render():
@@ -97,6 +99,24 @@ def test_leaving_playfield_is_failure_not_success():
         assert terminated and not truncated
         assert info["termination_reason"] == "out_of_bounds"
         assert not info["lap_complete"]
+    finally:
+        env.close()
+
+
+def test_monaco_uses_its_actual_road_edges_outside_the_procedural_arena():
+    config = load_config("configs/formula-road-learning-braking-cuda.toml")
+    layout = TrackLayout.load(Path("tracks/monaco.json"))
+    env = make_env(config.environment, track_layout=layout)
+    try:
+        observation, info = env.reset(seed=0)
+        assert info["track_length"] == pytest.approx(3337.0, abs=0.01)
+        assert abs(info["position"][0]) > PLAYFIELD
+        assert env.road_contact_fraction == 1.0
+        left, right = observation[16:20].reshape(2, 2)
+        assert np.linalg.norm(right - left) * (6.0 + TRACK_WIDTH) == pytest.approx(10, rel=0.01)
+        _, _, terminated, truncated, info = env.step(np.zeros(2, dtype=np.float32))
+        assert not (terminated or truncated)
+        assert info["native_reward"] != -100
     finally:
         env.close()
 

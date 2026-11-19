@@ -14,10 +14,14 @@ PREVIEW_M = np.array([6.0, 15.0, 30.0, 60.0, 100.0])
 class CorridorFeatures:
     """Bordes reales del asfalto muestreados en las estaciones del eje."""
 
-    def __init__(self, road: CircuitGeometry, road_angles: np.ndarray):
+    def __init__(
+        self, road: CircuitGeometry, road_angles: np.ndarray, *, edges: np.ndarray | None = None
+    ):
         self.road = road
-        offset = TRACK_WIDTH * np.column_stack((np.cos(road_angles), np.sin(road_angles)))
-        self.edges = np.stack((road.points - offset, road.points + offset), axis=1)
+        if edges is None:
+            offset = TRACK_WIDTH * np.column_stack((np.cos(road_angles), np.sin(road_angles)))
+            edges = np.stack((road.points - offset, road.points + offset), axis=1)
+        self.edges = edges
 
     def observation(self, distance, position, forward, right):
         road = self.road

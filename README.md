@@ -932,3 +932,25 @@ uv run f1-ai --config configs/formula-direct-cuda.toml replay \
 El MP4 toma 25 cuadros por segundo de los 50 pasos físicos del entorno. En
 `chase` incluye velocidad, gas, freno y deslizamiento. `top` mantiene la vista
 cenital.
+
+### Circuito de Mónaco
+
+`replay --track` usa un circuito cerrado en metros con el checkpoint guardado.
+El primer punto del archivo marca la salida y los demás siguen el sentido de
+carrera. El comando guarda el MP4, la telemetría por paso y los metadatos.
+
+```bash
+uv run f1-ai --config configs/formula-road-learning-braking-cuda.toml replay \
+  --track tracks/monaco.json --model runs/road-braking/best_model.zip \
+  --camera top --device cpu --output runs/replays/monaco-ppo.mp4
+```
+
+El trazado de Mónaco se proyectó a un plano local, se suavizó para construir
+las baldosas de asfalto y se ajustó a los 3,337 km oficiales. La versión 2D
+usa un ancho uniforme de 10 m. [Ficha del circuito](https://www.formula1.com/en/information/monaco-circuit-de-monaco-monte-carlo.2ZWRtIcSI6ZzVGX1uGRpkJ)
+
+El eje procede de Wikimedia Commons bajo CC0. La línea de salida procede de
+© OpenStreetMap contributors. El archivo de trazado se distribuye bajo ODbL.
+[Eje del circuito](https://commons.wikimedia.org/wiki/Data:Monaco_F1_Track.map) ·
+[Salida y meta](https://www.openstreetmap.org/node/4937755860) ·
+[Licencia ODbL](https://opendatacommons.org/licenses/odbl/1-0/)
