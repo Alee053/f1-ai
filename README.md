@@ -791,6 +791,19 @@ y añade los dos mandos del paso anterior y el cambio de dirección de la
 pista a 6, 15, 30, 60 y 100 metros. Sus 48 entradas se calculan a partir
 del estado del coche y de la geometría del asfalto.
 
+SAC se puede entrenar con los mismos circuitos, observaciones y recompensa.
+Utiliza un búfer con transiciones de sus propias interacciones con el
+simulador. Para continuar, se usa el archivo final o interrumpido junto
+con el búfer que se guardó en el mismo directorio. [Haarnoja et al.](https://proceedings.mlr.press/v80/haarnoja18b.html)
+
+```bash
+uv run f1-ai --config "$config" train-sac --seed 73 --output runs/sac-road
+uv run f1-ai --config "$config" evaluate --agents sac --split validation \
+  --model runs/sac-road/best_model.zip --output runs/sac-road-validation
+uv run f1-ai --config "$config" train-sac --seed 73 --timesteps 786432 \
+  --resume-model runs/sac-road/model.zip --output runs/sac-road-continuation
+```
+
 ### Currículo de curvas
 
 `formula-curriculum-cuda.toml` parte de un checkpoint de mandos directos y sube

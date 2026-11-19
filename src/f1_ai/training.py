@@ -14,7 +14,7 @@ import numpy as np
 import torch
 from gymnasium import Env
 from gymnasium.wrappers import TransformReward
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv
@@ -239,6 +239,8 @@ def train(
         raise ValueError("La prueba smoke no permite reanudar un entrenamiento.")
     source_path = resume_model if resume_model is not None else initial_model
     source_metadata = read_model_metadata(source_path) if source_path is not None else {}
+    if source_metadata.get("kind") == "sac":
+        raise ValueError("Un checkpoint SAC no puede inicializar una política PPO.")
     if resume_model is not None:
         if bool(source_metadata.get("rehearsal")) != (rehearsal_dataset is not None):
             raise ValueError(
@@ -448,7 +450,7 @@ def load_model(
     *,
     device: str | None = None,
     env: Env | VecEnv | None = None,
-) -> PPO:
+) -> PPO | SAC:
     """Carga exclusivamente un checkpoint local de confianza con metadatos compatibles."""
     metadata = read_model_metadata(path)
     if metadata["observation_version"] != observation_contract(config.environment)[0]:
@@ -456,9 +458,12 @@ def load_model(
     recorded_environment = EnvironmentConfig(**metadata["configuration"]["environment"])
     if asdict(recorded_environment) != asdict(config.environment):
         raise ValueError("La configuración de evaluación no coincide con la del modelo.")
-    if metadata["kind"] not in {"ppo", "ppo_smoke", "behavior_cloning", "dagger"}:
+    if metadata["kind"] not in {"ppo", "ppo_smoke", "behavior_cloning", "dagger", "sac"}:
         raise ValueError("Los metadatos no corresponden a un entrenamiento de este proyecto.")
     torch.set_num_threads(config.ppo.torch_threads)
     requested_device = config.ppo.device if device is None else device
-    algorithm = RehearsalPPO if metadata.get("training_variant") == "ppo_rehearsal" else PPO
+    if metadata["kind"] == "sac":
+        algorithm = SAC
+    else:
+        algorithm = RehearsalPPO if metadata.get("training_variant") == "ppo_rehearsal" else PPO
     return algorithm.load(path, device=require_device(requested_device), env=env)

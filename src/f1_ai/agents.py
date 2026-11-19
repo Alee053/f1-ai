@@ -106,7 +106,7 @@ class PursuitAgent:
         return float(np.clip(force / available, 0.0, 0.7))
 
 
-class PPOAgent:
+class SB3Agent:
     def __init__(self, model):
         from f1_ai.residual_env import RESIDUAL_OBSERVATION_NAMES
 
@@ -129,3 +129,6 @@ class PPOAgent:
     def action(self, observation: np.ndarray) -> np.ndarray:
         action, _ = self.model.predict(observation, deterministic=True)
         return np.asarray(action, dtype=np.float32)
+
+
+PPOAgent = SB3Agent

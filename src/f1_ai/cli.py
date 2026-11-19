@@ -9,7 +9,7 @@ from pathlib import Path
 
 from gymnasium.envs.box2d.car_racing import TRACK_WIDTH
 
-from f1_ai.agents import PPOAgent, PursuitAgent, RandomAgent, ZeroCorrectionAgent
+from f1_ai.agents import PursuitAgent, RandomAgent, SB3Agent, ZeroCorrectionAgent
 from f1_ai.artifacts import create_directory, provenance, write_json
 from f1_ai.config import RACING_RESIDUAL, load_config
 from f1_ai.environment import make_env
@@ -28,7 +28,7 @@ def parser() -> argparse.ArgumentParser:
     evaluate.add_argument(
         "--agents",
         nargs="+",
-        choices=["random", "pursuit", "reference", "ppo", "bc", "bc-ppo", "neat"],
+        choices=["random", "pursuit", "reference", "ppo", "bc", "bc-ppo", "neat", "sac"],
         default=["random", "pursuit"],
     )
     evaluate.add_argument("--split", choices=["train", "validation", "test"], default="validation")
@@ -39,7 +39,7 @@ def parser() -> argparse.ArgumentParser:
         "--min-completion", type=float, help="Exigir una tasa mínima a cada agente"
     )
     evaluate.add_argument(
-        "--model", type=Path, help="Checkpoint PPO local de confianza o política NEAT JSON"
+        "--model", type=Path, help="Checkpoint local de confianza o política NEAT JSON"
     )
     training = commands.add_parser("train", help="Entrenar PPO o ejecutar una prueba de 512 pasos")
     training.add_argument("--smoke", action="store_true", help="Prueba de integración de 512 pasos")
@@ -74,6 +74,13 @@ def parser() -> argparse.ArgumentParser:
     evolution.add_argument("--timesteps", type=int)
     evolution.add_argument("--rollout-steps", type=int, default=512)
     evolution.add_argument("--neat-config", type=Path, default=Path("configs/neat-road.ini"))
+    sac = commands.add_parser("train-sac", help="Entrenar SAC con mandos directos y sin maestro")
+    sac.add_argument("--output", type=Path, required=True)
+    sac.add_argument("--seed", type=int)
+    sac.add_argument("--timesteps", type=int)
+    sac.add_argument(
+        "--resume-model", type=Path, help="Modelo SAC con su búfer en la misma corrida"
+    )
     plot = commands.add_parser("plot", help="Exportar figuras de una evaluación existente")
     plot.add_argument("--evaluation", type=Path, required=True)
     training_plot = commands.add_parser(
@@ -206,7 +213,7 @@ def run_evaluate(config, args):
         raise ValueError("El agente reference requiere el perfil de control racing-residual-v1.")
     if args.min_completion is not None and not 0 <= args.min_completion <= 1:
         raise ValueError("La finalización mínima debe pertenecer a [0, 1].")
-    learned = set(args.agents) & {"ppo", "bc", "bc-ppo", "neat"}
+    learned = set(args.agents) & {"ppo", "bc", "bc-ppo", "neat", "sac"}
     if len(learned) > 1:
         raise ValueError("Un checkpoint solo puede evaluarse bajo una etiqueta de método.")
     if learned and args.model is None:
@@ -224,6 +231,8 @@ def run_evaluate(config, args):
         from f1_ai.training import load_model, read_model_metadata
 
         model_metadata = read_model_metadata(args.model)
+        if ("sac" in learned) != (model_metadata["kind"] == "sac"):
+            raise ValueError("La etiqueta sac requiere un checkpoint SAC del proyecto.")
         root = model_metadata.get("initial_policy", {}).get("root_kind")
         imitated = model_metadata["kind"] in {"behavior_cloning", "dagger"}
         if "bc" in learned and not imitated:
@@ -233,7 +242,7 @@ def run_evaluate(config, args):
         if "ppo" in learned and (imitated or root in {"behavior_cloning", "dagger"}):
             raise ValueError("El checkpoint incluye imitación: use bc o bc-ppo para identificarlo.")
         model = load_model(args.model, config)
-        agent = PPOAgent(model)
+        agent = SB3Agent(model)
         device = str(model.device)
     output = create_directory(args.output)
     factories = {}
@@ -297,9 +306,11 @@ def main():
             default_config = "configs/formula.toml"
         elif args.command == "train-neat":
             default_config = "configs/formula-road-cuda.toml"
+        elif args.command == "train-sac":
+            default_config = "configs/formula-road-learning-cuda.toml"
         config_path = args.config or Path(default_config)
         config = load_config(config_path)
-        if args.command in {"train", "train-neat", "clone"} and args.seed is not None:
+        if args.command in {"train", "train-neat", "train-sac", "clone"} and args.seed is not None:
             config = replace(config, ppo=replace(config.ppo, seed=args.seed))
         if getattr(args, "timesteps", None) is not None:
             if getattr(args, "smoke", False):
@@ -389,6 +400,11 @@ def main():
                 result = train_neat(
                     config, args.output, args.neat_config, rollout_steps=args.rollout_steps
                 )
+                print(json.dumps(result, indent=2, allow_nan=False))
+            case "train-sac":
+                from f1_ai.soft_actor_critic import train_sac
+
+                result = train_sac(config, args.output, resume_model=args.resume_model)
                 print(json.dumps(result, indent=2, allow_nan=False))
             case "plot":
                 from f1_ai.plotting import plot_evaluation

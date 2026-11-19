@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
-from f1_ai.agents import PPOAgent
+from f1_ai.agents import SB3Agent
 from f1_ai.artifacts import write_json
 from f1_ai.config import LAP_TIME_REWARDS, ExperimentConfig
 from f1_ai.evaluation import driving_score, evaluate_episode, summarize
@@ -30,7 +30,7 @@ class DrivingEvaluation(BaseCallback):
         episodes = [
             evaluate_episode(
                 self.config.environment,
-                PPOAgent(self.model),
+                SB3Agent(self.model),
                 seed,
                 agent_name=self.agent_name,
             )
