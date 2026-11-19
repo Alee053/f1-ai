@@ -20,7 +20,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv
 
 from f1_ai.artifacts import create_directory, provenance, write_json
-from f1_ai.callbacks import DrivingEvaluation
+from f1_ai.callbacks import PLATEAU_MIN_LAP_GAIN_SECONDS, DrivingEvaluation
 from f1_ai.config import (
     CORRIDOR_OBSERVATION,
     LAP_TIME_REWARDS,
@@ -249,7 +249,12 @@ def train(
     resume_model: Path | None = None,
     rehearsal_dataset: Path | None = None,
     transfer_vehicle: bool = False,
+    plateau_patience: int = 0,
 ) -> dict:
+    if type(plateau_patience) is not int or plateau_patience < 0:
+        raise ValueError("--plateau-evals debe ser un entero no negativo.")
+    if plateau_patience and (smoke or config.environment.reward_profile not in LAP_TIME_REWARDS):
+        raise ValueError("--plateau-evals requiere entrenamiento con tiempos de vuelta.")
     if initial_model is not None and resume_model is not None:
         raise ValueError("Elija inicialización de pesos o reanudación, no ambas.")
     if transfer_vehicle and initial_model is None:
@@ -313,6 +318,12 @@ def train(
         if config.environment.reward_profile in LAP_TIME_REWARDS
         else "completed_laps, coverage, lap_time, return"
     )
+    if plateau_patience:
+        metadata["checkpoint_selection"] = "completed_laps, incident_free_laps, paired_lap_gain"
+        metadata["plateau"] = {
+            "patience_evaluations": plateau_patience,
+            "min_lap_gain_seconds": PLATEAU_MIN_LAP_GAIN_SECONDS,
+        }
     output = create_directory(output)
     torch.set_num_threads(settings.torch_threads)
     envs = make_training_envs(config)
@@ -402,14 +413,14 @@ def train(
         before = torch.cat(
             [parameter.detach().flatten().clone() for parameter in model.policy.parameters()]
         )
-        callbacks = []
-        if not smoke:
-            callbacks = [DrivingEvaluation(config, output)]
+        evaluation = (
+            None if smoke else DrivingEvaluation(config, output, plateau_patience=plateau_patience)
+        )
         try:
             with _interrupt_on_sigterm():
                 model.learn(
                     total_timesteps=settings.total_timesteps - starting_timesteps,
-                    callback=callbacks,
+                    callback=evaluation,
                     reset_num_timesteps=resume_model is None,
                 )
         except KeyboardInterrupt as error:
@@ -444,12 +455,14 @@ def train(
         if model.device.type == "cuda":
             torch.cuda.synchronize(model.device)
         elapsed = time.perf_counter() - started
+        plateau = evaluation.plateau if evaluation is not None else None
         results = {
             "kind": "integration_smoke" if smoke else "training",
             "requested_timesteps": settings.total_timesteps,
             "actual_timesteps": model.num_timesteps,
             "starting_timesteps": starting_timesteps,
             "trained_timesteps": model.num_timesteps - starting_timesteps,
+            "stop_reason": "validation_plateau" if plateau and plateau.reached else "budget",
             "wall_seconds": elapsed,
             "steps_per_second": (model.num_timesteps - starting_timesteps) / elapsed,
             "policy_parameter_delta_l2": float(torch.linalg.vector_norm(after - before)),

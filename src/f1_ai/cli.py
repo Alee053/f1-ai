@@ -47,6 +47,12 @@ def parser() -> argparse.ArgumentParser:
     training.add_argument("--seed", type=int)
     training.add_argument("--timesteps", type=int)
     training.add_argument(
+        "--plateau-evals",
+        type=int,
+        default=0,
+        help="Detener PPO después de este número de validaciones sin mejora en vuelta",
+    )
+    training.add_argument(
         "--rehearsal-dataset", type=Path, help="Alternar PPO con repaso BC de un dataset train"
     )
     training.add_argument(
@@ -390,6 +396,7 @@ def main():
                             resume_model=args.resume_model,
                             rehearsal_dataset=args.rehearsal_dataset,
                             transfer_vehicle=args.transfer_vehicle,
+                            plateau_patience=args.plateau_evals,
                         ),
                         indent=2,
                     )

@@ -815,6 +815,27 @@ las capas ocultas del actor y los pesos de la salida de giro. PPO sigue ajustand
 la salida del pedal y el crítico. La política decide ambos mandos durante
 la evaluación.
 
+`configs/formula-road-learning-braking-cuda.toml` combina vueltas completas,
+arranques y sectores de frenada. `road_start_curriculum` y `braking_curriculum`
+seleccionan rectas que desembocan en una curva a partir de la geometría del
+asfalto. La velocidad inicial sube de 16–22 m/s a 22–31 m/s conforme avanza
+el entrenamiento. El agente practica frenar, girar y volver a acelerar
+dentro del mismo sector.
+
+```bash
+braking=configs/formula-road-learning-braking-cuda.toml
+uv run f1-ai --config "$braking" train --initial-model runs/road-fast/best_model.zip \
+  --plateau-evals 6 --output runs/road-braking
+```
+
+`--plateau-evals 6` detiene PPO tras seis controles sin avance desde la
+última mejora. La selección prioriza terminar y completar vueltas sin
+salidas ni bloqueos. A igual número de vueltas válidas, exige una ganancia
+media de 0,15 s sobre las pistas que ambos modelos completan sin incidentes.
+La cuenta empieza en la última etapa del currículo y se reinicia al reanudar.
+`best_model.zip` conserva el checkpoint seleccionado y `training_results.json`
+registra el motivo de parada. El presupuesto de pasos sigue como tope.
+
 El perfil opcional `road-preview-v6` conserva las 36 entradas de `road-v5`
 y añade los dos mandos del paso anterior y el cambio de dirección de la
 pista a 6, 15, 30, 60 y 100 metros. Sus 48 entradas se calculan a partir
