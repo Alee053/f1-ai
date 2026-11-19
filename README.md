@@ -811,7 +811,7 @@ los próximos 50 metros de asfalto acumulan hasta 12° de giro. Entre 12° y
 entrenamiento calcula ese giro a partir de la geometría del asfalto.
 
 Para ajustar el pedal de un piloto existente, `pedal_only = true` congela
-las capas del actor y los pesos de la salida de giro. PPO sigue ajustando
+las capas ocultas del actor y los pesos de la salida de giro. PPO sigue ajustando
 la salida del pedal y el crítico. La política decide ambos mandos durante
 la evaluación.
 

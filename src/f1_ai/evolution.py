@@ -97,6 +97,8 @@ def train_neat(
     config: ExperimentConfig, output: Path, neat_config: Path, *, rollout_steps: int
 ) -> dict:
     settings = config.ppo
+    if settings.pedal_only:
+        raise ValueError("pedal_only requiere entrenamiento PPO.")
     if (
         config.environment.observation_profile != ROAD_OBSERVATION
         or config.environment.control_profile != "direct"
