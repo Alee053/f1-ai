@@ -257,6 +257,42 @@ def test_road_preview_adds_turns_and_previous_commands_without_a_plan(monkeypatc
         base_env.close()
 
 
+def test_road_preview_warm_start_preserves_the_checkpoint_actions(tmp_path):
+    base = load_config("configs/formula-road-learning-braking-cuda.toml")
+    base = replace(base, ppo=replace(base.ppo, device="cpu"))
+    preview = replace(
+        base, environment=replace(base.environment, observation_profile="road-preview-v6")
+    )
+    old_env = make_env(base.environment)
+    new_env = make_env(preview.environment)
+    try:
+        old_obs, _ = old_env.reset(seed=7)
+        new_obs, _ = new_env.reset(seed=7)
+        original = create_model(base, old_env)
+        checkpoint = tmp_path / "model.zip"
+        original.save(checkpoint)
+        metadata = provenance(base, kind="ppo")
+        write_json(tmp_path / "metadata.json", metadata)
+
+        expanded = create_model(preview, new_env)
+        assert _initialize_policy(expanded, preview, checkpoint, metadata) == (
+            "zero_initialized_road_preview_inputs",
+        )
+        for extractor in (
+            expanded.policy.mlp_extractor.policy_net,
+            expanded.policy.mlp_extractor.value_net,
+        ):
+            assert torch.count_nonzero(extractor[0].weight[:, 36:]).item() == 0
+        for _ in range(4):
+            action, _ = original.predict(old_obs, deterministic=True)
+            np.testing.assert_allclose(action, PPOAgent(expanded).action(new_obs), atol=1e-6)
+            old_obs = old_env.step(action)[0]
+            new_obs = new_env.step(action)[0]
+    finally:
+        old_env.close()
+        new_env.close()
+
+
 def test_planned_policy_controls_steering_and_pedal_directly():
     config = load_config("configs/formula-direct-cuda.toml")
     env = make_env(config.environment)

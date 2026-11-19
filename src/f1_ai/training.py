@@ -27,6 +27,8 @@ from f1_ai.config import (
     MAP_OBSERVATIONS,
     PLANNED_OBSERVATION,
     RACING_RESIDUAL,
+    ROAD_OBSERVATION,
+    ROAD_PREVIEW_OBSERVATION,
     EnvironmentConfig,
     ExperimentConfig,
     PPOConfig,
@@ -187,9 +189,16 @@ def _initialize_policy(
         environment.observation_profile == CORRIDOR_OBSERVATION
         and source_metadata["observation_version"] == 4
     )
+    extend_road_preview = (
+        environment.observation_profile == ROAD_PREVIEW_OBSERVATION
+        and recorded.observation_profile == ROAD_OBSERVATION
+    )
     if extend_corridor:
         environment = replace(environment, observation_profile=PLANNED_OBSERVATION)
         transfers.append("zero_initialized_corridor_inputs")
+    if extend_road_preview:
+        environment = replace(environment, observation_profile=ROAD_OBSERVATION)
+        transfers.append("zero_initialized_road_preview_inputs")
     if (
         environment.observation_profile in MAP_OBSERVATIONS
         and environment.observation_profile == recorded.observation_profile
@@ -210,7 +219,7 @@ def _initialize_policy(
     if source.policy.squash_output != model.policy.squash_output:
         raise ValueError("La transformación de acciones de la inicialización no coincide.")
     weights = source.policy.state_dict()
-    if extend_corridor:
+    if extend_corridor or extend_road_preview:
         added = model.observation_space.shape[0] - source.observation_space.shape[0]
         for network in ("policy_net", "value_net"):
             key = f"mlp_extractor.{network}.0.weight"

@@ -841,6 +841,12 @@ y añade los dos mandos del paso anterior y el cambio de dirección de la
 pista a 6, 15, 30, 60 y 100 metros. Sus 48 entradas se calculan a partir
 del estado del coche y de la geometría del asfalto.
 
+Para continuar un PPO `road-v5` con esas entradas, se cambia el perfil a
+`road-preview-v6` y se pasa el checkpoint anterior a `--initial-model`.
+El actor y el crítico arrancan con peso cero en las 12 entradas nuevas.
+El control inicial conserva los mandos del checkpoint y PPO puede usar
+las nuevas observaciones durante el entrenamiento.
+
 SAC se puede entrenar con los mismos circuitos, observaciones y recompensa.
 Utiliza un búfer con transiciones de sus propias interacciones con el
 simulador. Para continuar, se usa el archivo final o interrumpido junto
