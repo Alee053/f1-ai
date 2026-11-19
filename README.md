@@ -786,6 +786,25 @@ uv run f1-ai --config "$config" evaluate --agents ppo --split validation \
   --model runs/road-from-random/best_model.zip --output runs/road-from-random-validation
 ```
 
+La política rápida de esta serie partió del checkpoint de 393.216 pasos.
+La primera continuación usó actualizaciones más pequeñas y aportó 98.304
+pasos al checkpoint seleccionado. La segunda elevó el ritmo de práctica
+a 17 m/s y aumentó el coste por perder contacto con el asfalto. Las dos
+etapas continuaron desde pesos aprendidos por PPO.
+
+```bash
+refine=configs/formula-road-learning-refine-cuda.toml
+fast=configs/formula-road-learning-fast-cuda.toml
+uv run f1-ai --config "$refine" train --timesteps 98304 \
+  --initial-model runs/road-from-random/checkpoints/ppo_393216_steps.zip \
+  --output runs/road-refined
+uv run f1-ai --config "$fast" train \
+  --initial-model runs/road-refined/checkpoints/ppo_98304_steps.zip \
+  --output runs/road-fast
+uv run f1-ai --config "$fast" evaluate --agents ppo --split validation \
+  --model runs/road-fast/checkpoints/ppo_245760_steps.zip --output runs/road-fast-validation
+```
+
 El perfil opcional `road-preview-v6` conserva las 36 entradas de `road-v5`
 y añade los dos mandos del paso anterior y el cambio de dirección de la
 pista a 6, 15, 30, 60 y 100 metros. Sus 48 entradas se calculan a partir
