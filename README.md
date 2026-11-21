@@ -1,12 +1,12 @@
 # Agente de conducción en carreras 2D
 
 Avance del proyecto de Inteligencia Artificial SIS-252, UCB Cochabamba, gestión II-2026.
-El objetivo principal es entrenar y evaluar una política neuronal mediante imitación
-y ajuste con PPO en un entorno existente. Gymnasium CarRacing aporta el circuito
-y la física Box2D del perfil `classic`, utilizado en los experimentos iniciales.
-La etapa actual usa `formula-v1`, con dinámica planar en unidades SI, mandos
-directos y práctica de frenada. Sus parámetros aproximan un monoplaza.
+El proyecto entrena y evalúa una política neuronal para completar vueltas y reducir
+su tiempo. Los primeros experimentos usan el perfil `classic` de Gymnasium
+CarRacing con Box2D. La versión de entrega usa `formula-v1`, un modelo planar
+simplificado de un monoplaza con mandos directos de giro, acelerador y freno.
 
+- [Resultados de la entrega](#resultados-de-la-entrega)
 - [Política con mandos directos y currículo](#política-con-mandos-directos)
 - [Conducción con mando Xbox](#conducción-manual-con-xbox)
 - [Reproducción cenital o en perspectiva](#v%C3%ADdeo-de-la-pol%C3%ADtica)
@@ -21,8 +21,8 @@ los perfiles existentes conservan CPU como dispositivo predeterminado. La ejecuc
 CUDA requiere una GPU NVIDIA y un controlador compatible. No se requieren servicios
 pagados ni instalaciones globales de Python o del toolkit CUDA.
 
-Los informes y documentos permanecen en `docs/` y no se versionan. Los experimentos
-y modelos se guardan en `runs/`, también excluido de Git.
+Los documentos de trabajo en `docs/`, los PDF en `output/pdf/` y los resultados,
+modelos y vídeos de `runs/` se guardan fuera de Git.
 
 ## Instalación y comprobaciones
 
@@ -674,6 +674,217 @@ coordenadas de la trazada calculada, su velocidad objetivo y su curvatura.
 La imitación puede leer demostraciones de `corridor-v4` del mismo entorno.
 El cargador conserva solo las columnas que utiliza este perfil.
 
+### Comparación con sensores de pista
+
+`configs/formula-road-cuda.toml` usa la física calibrada de
+`formula-wide-entry-cuda.toml`. La red recibe 36 observaciones y entrega el
+giro y el pedal. La recompensa `lap-time-v1` premia el avance y cobra por
+tiempo, deslizamiento excesivo y maniobras bruscas. La red elige por dónde
+pasar dentro del corredor.
+
+Para preparar un alumno, se usa un checkpoint compatible de `corridor-v4`
+con su `metadata.json`. El maestro ve la trazada durante la recolección.
+El dataset conserva los mandos del maestro y las observaciones de
+`road-v5` en circuitos de entrenamiento. En DAgger, el alumno también
+conduce y el maestro etiqueta los estados que visita.
+
+```bash
+config=configs/formula-road-cuda.toml
+teacher=runs/teacher/model.zip
+uv run f1-ai --config "$config" demonstrations --teacher ppo --teacher-model "$teacher" \
+  --output runs/road-demonstrations
+uv run f1-ai --config "$config" clone --dataset runs/road-demonstrations \
+  --teacher-model "$teacher" --dagger-rounds 1 --epochs 24 --learning-rate 0.0005 \
+  --output runs/road-clone
+uv run f1-ai --config "$config" train --initial-model runs/road-clone/best_model.zip \
+  --rehearsal-dataset runs/road-demonstrations --rehearsal-fade-steps 16384 \
+  --output runs/road-ppo-distilled
+uv run f1-ai --config "$config" train --output runs/road-ppo-cold
+```
+
+El repaso reduce su tasa de aprendizaje de forma lineal hasta la cantidad de
+pasos indicada. A partir de ese punto solo se actualiza con PPO. El actor
+usa `road-v5` desde el inicio del entrenamiento y durante toda la evaluación.
+Al comparar presupuestos, se cuentan por separado las demostraciones,
+las interacciones de DAgger y las de PPO.
+
+NEAT reutiliza el entorno de entrenamiento y su recompensa descontada.
+El preset evalúa 16 genomas por generación durante 512 pasos cada uno.
+Todos los genomas de una generación comienzan con la misma secuencia de
+circuitos de entrenamiento. Si un episodio termina, se inicia otro hasta
+agotar los pasos asignados al genoma. El campeón de cada generación pasa
+a validación, donde se priorizan las vueltas limpias y su tiempo.
+El presupuesto debe ser múltiplo de los pasos de una generación.
+[NEAT-Python 2.0](https://pypi.org/project/neat-python/2.0.0/)
+
+```bash
+uv run --extra neat f1-ai --config "$config" train-neat --output runs/road-neat
+uv run --extra neat f1-ai --config "$config" evaluate --agents neat \
+  --model runs/road-neat/best_model.json --split validation --output runs/road-neat-validation
+uv run f1-ai --config "$config" evaluate --agents bc-ppo \
+  --model runs/road-ppo-distilled/model.zip --split validation \
+  --output runs/road-ppo-distilled-validation
+uv run f1-ai --config "$config" evaluate --agents ppo \
+  --model runs/road-ppo-cold/model.zip --split validation --output runs/road-ppo-cold-validation
+```
+
+Para medir al final del presupuesto, evaluar `model.zip`, que se guarda
+después de la última actualización de PPO. NEAT guarda el resultado de
+cada generación en `generation-*.json` y exporta el campeón seleccionado
+en `best_model.json`. Las semillas 200 a 204 se reservan para la prueba final.
+
+### Arranque y práctica de curvas en road-v5
+
+En una copia de `formula-road-cuda.toml`, `no_progress_steps = 150` termina
+un episodio de entrenamiento si el coche está en el asfalto y lleva tres
+segundos sin sumar cuatro metros válidos de avance. La terminación cuesta
+120 puntos antes de escalar la recompensa. Para facilitar la exploración
+inicial se probaron `rear_slip_penalty = 0.12` y `front_lock_penalty = 0.15`.
+La evaluación de vueltas completas conserva su recompensa original.
+
+`corner_curriculum = true`, `road_start_curriculum = true` y
+`launch_curriculum = true` mezclan salidas desde reposo con trayectos que
+comienzan en movimiento antes de una curva. El entorno calcula la posición
+inicial a partir de la geometría del asfalto. Los sectores pasan de 55 m a
+90 m a los 32.768 pasos y a 120 m a los 81.920. En cada fase sube la
+proporción de vueltas completas. El muestreo de estados iniciales es una
+forma de graduar la dificultad del aprendizaje. [Florensa et al.](https://proceedings.mlr.press/v78/florensa17a.html)
+
+Para un alumno de imitación que frena en la parrilla, se puede ajustar el
+pedal con los estados de arranque del dataset de entrenamiento. El ajuste
+usa observaciones por debajo de 1,8 m/s y regulariza los cambios del pedal
+en marcha. Modifica solo las ponderaciones de la salida del pedal de la
+red y guarda otro checkpoint para iniciar PPO.
+
+```bash
+uv run f1-ai --config "$config" calibrate-launch --model runs/road-clone/best_model.zip \
+  --dataset runs/road-demonstrations --output runs/road-clone-launch
+uv run f1-ai --config "$config" evaluate --agents bc \
+  --model runs/road-clone-launch/model.zip --split validation --output runs/road-launch-validation
+```
+
+### Entrenamiento desde cero con ritmo gradual
+
+`configs/formula-road-learning-cuda.toml` inicia PPO con pesos aleatorios,
+60 pistas de entrenamiento y un control cada 49.152 pasos. La recompensa
+mide el avance sobre el asfalto en metros y cobra el tiempo, los cambios
+bruscos, la pérdida de contacto y el patinaje excesivo. `learning_pace_m_s`
+aplica un coste cuadrático por encima del ritmo de práctica. La red conserva
+la capacidad de escoger ambos mandos. El avance por el circuito también se
+ha usado como señal densa en otros simuladores de carreras. [Fuchs et al.](https://arxiv.org/abs/2008.07971)
+
+Los sectores y las salidas cortas reciben un bono si se completan sin
+salidas ni bloqueos. `road_curriculum_scale` multiplica la duración de las
+primeras etapas. Se termina un episodio de entrenamiento después de 25
+pasos consecutivos fuera del asfalto. La evaluación usa la física,
+el horizonte y los criterios de vuelta completa de `lap-time-v1`.
+
+```bash
+config=configs/formula-road-learning-cuda.toml
+uv run f1-ai --config "$config" train --output runs/road-from-random
+uv run f1-ai --config "$config" evaluate --agents ppo --split validation \
+  --model runs/road-from-random/best_model.zip --output runs/road-from-random-validation
+```
+
+La política rápida de esta serie partió del checkpoint de 393.216 pasos.
+La primera continuación usó actualizaciones más pequeñas y aportó 98.304
+pasos al checkpoint seleccionado. La segunda elevó el ritmo de práctica
+a 17 m/s y aumentó el coste por perder contacto con el asfalto. Las dos
+etapas continuaron desde pesos aprendidos por PPO.
+
+```bash
+refine=configs/formula-road-learning-refine-cuda.toml
+fast=configs/formula-road-learning-fast-cuda.toml
+uv run f1-ai --config "$refine" train --timesteps 98304 \
+  --initial-model runs/road-from-random/checkpoints/ppo_393216_steps.zip \
+  --output runs/road-refined
+uv run f1-ai --config "$fast" train \
+  --initial-model runs/road-refined/checkpoints/ppo_98304_steps.zip \
+  --output runs/road-fast
+uv run f1-ai --config "$fast" evaluate --agents ppo --split validation \
+  --model runs/road-fast/checkpoints/ppo_245760_steps.zip --output runs/road-fast-validation
+```
+
+`learning_straight_pace_m_s` eleva el umbral del coste de velocidad cuando
+los próximos 50 metros de asfalto acumulan hasta 12° de giro. Entre 12° y
+30° el umbral vuelve gradualmente a `learning_pace_m_s`. La recompensa de
+entrenamiento calcula ese giro a partir de la geometría del asfalto.
+
+Para ajustar el pedal de un piloto existente, `pedal_only = true` congela
+las capas ocultas del actor y los pesos de la salida de giro. PPO sigue ajustando
+la salida del pedal y el crítico. La política decide ambos mandos durante
+la evaluación.
+
+`configs/formula-road-learning-braking-cuda.toml` combina vueltas completas,
+arranques y sectores de frenada. `road_start_curriculum` y `braking_curriculum`
+seleccionan rectas que desembocan en una curva a partir de la geometría del
+asfalto. La velocidad inicial sube de 16–22 m/s a 22–31 m/s conforme avanza
+el entrenamiento. El agente practica frenar, girar y volver a acelerar
+dentro del mismo sector.
+
+```bash
+braking=configs/formula-road-learning-braking-cuda.toml
+uv run f1-ai --config "$braking" train --initial-model runs/road-fast/best_model.zip \
+  --plateau-evals 6 --output runs/road-braking
+```
+
+`--plateau-evals 6` detiene PPO tras seis controles sin avance desde la
+última mejora. La selección prioriza terminar y completar vueltas sin
+salidas ni bloqueos. A igual número de vueltas válidas, exige una ganancia
+media de 0,15 s sobre las pistas que ambos modelos completan sin incidentes.
+La cuenta empieza en la última etapa del currículo y se reinicia al reanudar.
+`best_model.zip` conserva el checkpoint seleccionado y `training_results.json`
+registra el motivo de parada. El presupuesto de pasos sigue como tope.
+
+El perfil opcional `road-preview-v6` conserva las 36 entradas de `road-v5`
+y añade los dos mandos del paso anterior y el cambio de dirección de la
+pista a 6, 15, 30, 60 y 100 metros. Sus 48 entradas se calculan a partir
+del estado del coche y de la geometría del asfalto.
+
+Para continuar un PPO `road-v5` con esas entradas, se cambia el perfil a
+`road-preview-v6` y se pasa el checkpoint anterior a `--initial-model`.
+El actor y el crítico arrancan con peso cero en las 12 entradas nuevas.
+El control inicial conserva los mandos del checkpoint y PPO puede usar
+las nuevas observaciones durante el entrenamiento.
+
+SAC se puede entrenar con los mismos circuitos, observaciones y recompensa.
+Utiliza un búfer con transiciones de sus propias interacciones con el
+simulador. Para continuar, se usa el archivo final o interrumpido junto
+con el búfer que se guardó en el mismo directorio. [Haarnoja et al.](https://proceedings.mlr.press/v80/haarnoja18b.html)
+
+```bash
+uv run f1-ai --config "$config" train-sac --seed 73 --output runs/sac-road
+uv run f1-ai --config "$config" evaluate --agents sac --split validation \
+  --model runs/sac-road/best_model.zip --output runs/sac-road-validation
+uv run f1-ai --config "$config" train-sac --seed 73 --timesteps 786432 \
+  --resume-model runs/sac-road/model.zip --output runs/sac-road-continuation
+```
+
+### Resultados de la entrega
+
+El modelo de la entrega se seleccionó a las 344.064 interacciones de una
+continuación de PPO desde `road-v5`. Con `road-preview-v6`, la red decide el
+giro y el pedal a partir del estado del coche y la geometría de la pista.
+
+| Validación | PPO anterior (`road-v5`) | PPO seleccionado (`road-preview-v6`) |
+| --- | ---: | ---: |
+| Vueltas completadas sin salidas | 29/29 | 29/29 |
+| Vueltas sin salidas ni bloqueos | 28/29 | 28/29 |
+| Tiempo medio en las mismas 28 vueltas sin incidentes | 47,15 s | 46,79 s |
+
+El modelo seleccionado redujo el tiempo en las 28 vueltas comparables. En
+la prueba de transferencia a Mónaco, recorrió el 38,3 % del circuito sin
+reentrenamiento. Las semillas 200 a 204 siguen reservadas para la prueba final.
+
+Con la configuración y el checkpoint locales de la corrida, se puede exportar
+una vuelta en vista cenital para la semilla 137.
+
+```bash
+uv run f1-ai --config runs/road-lap-pace/preview.toml replay \
+  --model runs/road-lap-pace/ppo-v6/best_model.zip --seed 137 \
+  --camera top --device cpu --output runs/replays/entrega-137.mp4
+```
+
 ### Currículo de curvas
 
 `formula-curriculum-cuda.toml` parte de un checkpoint de mandos directos y sube
@@ -752,3 +963,25 @@ uv run f1-ai --config configs/formula-direct-cuda.toml replay \
 El MP4 toma 25 cuadros por segundo de los 50 pasos físicos del entorno. En
 `chase` incluye velocidad, gas, freno y deslizamiento. `top` mantiene la vista
 cenital.
+
+### Circuito de Mónaco
+
+`replay --track` usa un circuito cerrado en metros con el checkpoint guardado.
+El primer punto del archivo marca la salida y los demás siguen el sentido de
+carrera. El comando guarda el MP4, la telemetría por paso y los metadatos.
+
+```bash
+uv run f1-ai --config configs/formula-road-learning-braking-cuda.toml replay \
+  --track tracks/monaco.json --model runs/road-braking/best_model.zip \
+  --camera top --device cpu --output runs/replays/monaco-ppo.mp4
+```
+
+El trazado de Mónaco se proyectó a un plano local, se suavizó para construir
+las baldosas de asfalto y se ajustó a los 3,337 km oficiales. La versión 2D
+usa un ancho uniforme de 10 m. [Ficha del circuito](https://www.formula1.com/en/information/monaco-circuit-de-monaco-monte-carlo.2ZWRtIcSI6ZzVGX1uGRpkJ)
+
+El eje procede de Wikimedia Commons bajo CC0. La línea de salida procede de
+© OpenStreetMap contributors. El archivo de trazado se distribuye bajo ODbL.
+[Eje del circuito](https://commons.wikimedia.org/wiki/Data:Monaco_F1_Track.map) ·
+[Salida y meta](https://www.openstreetmap.org/node/4937755860) ·
+[Licencia ODbL](https://opendatacommons.org/licenses/odbl/1-0/)

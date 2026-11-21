@@ -13,8 +13,10 @@ RACING_RESIDUAL = "racing-residual-v1"
 PLANNED_OBSERVATION = "planned-v3"
 CORRIDOR_OBSERVATION = "corridor-v4"
 ROAD_OBSERVATION = "road-v5"
+ROAD_PREVIEW_OBSERVATION = "road-preview-v6"
+ROAD_OBSERVATIONS = {ROAD_OBSERVATION, ROAD_PREVIEW_OBSERVATION}
 REFERENCE_OBSERVATIONS = {PLANNED_OBSERVATION, CORRIDOR_OBSERVATION}
-MAP_OBSERVATIONS = REFERENCE_OBSERVATIONS | {ROAD_OBSERVATION}
+MAP_OBSERVATIONS = REFERENCE_OBSERVATIONS | ROAD_OBSERVATIONS
 REFERENCE_TIME = "reference-time-v1"
 LAP_TIME_REWARDS = {"lap-time-v1", REFERENCE_TIME}
 
@@ -156,11 +158,18 @@ class PPOConfig:
     recovery_curriculum: bool = False
     launch_curriculum: bool = False
     wide_entry_curriculum: bool = False
+    road_start_curriculum: bool = False
+    road_curriculum_scale: int = 1
+    learning_pace_m_s: float = 0.0
+    learning_straight_pace_m_s: float = 0.0
+    pedal_only: bool = False
     rear_slip_penalty: float = 0.0
     front_lock_penalty: float = 0.0
     time_progress_mix: float = 0.0
     rehearsal_learning_rate: float = 1e-4
+    rehearsal_fade_steps: int = 0
     road_contact_penalty: float = 0.0
+    no_progress_steps: int = 0
 
     def __post_init__(self):
         if not isinstance(self.device, str) or self.device not in {"cpu", "cuda"}:
@@ -208,6 +217,7 @@ class PPOConfig:
             "recovery_curriculum",
             "launch_curriculum",
             "wide_entry_curriculum",
+            "road_start_curriculum",
         ):
             enabled = getattr(self, name)
             if type(enabled) is not bool or (enabled and not self.corner_curriculum):
@@ -220,8 +230,35 @@ class PPOConfig:
             raise ValueError("time_progress_mix debe pertenecer a [0, 1].")
         if not 0 < self.rehearsal_learning_rate < 1:
             raise ValueError("rehearsal_learning_rate debe pertenecer a (0, 1).")
+        if type(self.rehearsal_fade_steps) is not int or self.rehearsal_fade_steps < 0:
+            raise ValueError("rehearsal_fade_steps debe ser un entero no negativo.")
         if isinstance(self.road_contact_penalty, bool) or not 0 <= self.road_contact_penalty <= 2:
             raise ValueError("road_contact_penalty debe pertenecer a [0, 2].")
+        if type(self.no_progress_steps) is not int or self.no_progress_steps < 0:
+            raise ValueError("no_progress_steps debe ser un entero no negativo.")
+        if type(self.road_curriculum_scale) is not int or self.road_curriculum_scale < 1:
+            raise ValueError("road_curriculum_scale debe ser un entero positivo.")
+        if self.road_curriculum_scale != 1 and not self.road_start_curriculum:
+            raise ValueError("road_curriculum_scale requiere road_start_curriculum.")
+        if (
+            type(self.learning_pace_m_s) not in (int, float)
+            or not 0 <= self.learning_pace_m_s <= 65
+        ):
+            raise ValueError("learning_pace_m_s debe pertenecer a [0, 65].")
+        if (
+            type(self.learning_straight_pace_m_s) not in (int, float)
+            or not 0 <= self.learning_straight_pace_m_s <= 65
+        ):
+            raise ValueError("learning_straight_pace_m_s debe pertenecer a [0, 65].")
+        if (
+            self.learning_straight_pace_m_s
+            and not 0 < self.learning_pace_m_s <= self.learning_straight_pace_m_s
+        ):
+            raise ValueError(
+                "learning_straight_pace_m_s requiere un ritmo base positivo menor o igual."
+            )
+        if type(self.pedal_only) is not bool:
+            raise ValueError("pedal_only debe ser booleano.")
         if (
             type(self.sde_sample_freq) is not int
             or self.sde_sample_freq < -1
@@ -237,6 +274,27 @@ class ExperimentConfig:
     ppo: PPOConfig
 
     def __post_init__(self):
+        if self.ppo.pedal_only and self.environment.control_profile != "direct":
+            raise ValueError("pedal_only requiere una política de mandos directos.")
+        if self.ppo.learning_pace_m_s and (
+            self.environment.observation_profile not in ROAD_OBSERVATIONS
+            or self.environment.control_profile != "direct"
+            or self.environment.reward_profile != "lap-time-v1"
+            or self.ppo.time_progress_mix
+        ):
+            raise ValueError("learning_pace_m_s requiere un perfil vial sin trazada.")
+        if self.ppo.road_start_curriculum and (
+            self.environment.observation_profile not in ROAD_OBSERVATIONS
+            or self.ppo.recovery_curriculum
+            or self.ppo.wide_entry_curriculum
+            or self.ppo.time_progress_mix
+        ):
+            raise ValueError("road_start_curriculum requiere un perfil vial sin trazada.")
+        if self.ppo.no_progress_steps and (
+            self.environment.control_profile != "direct"
+            or self.environment.reward_profile != "lap-time-v1"
+        ):
+            raise ValueError("no_progress_steps requiere mandos directos y recompensa lap-time-v1.")
         if self.ppo.wide_entry_curriculum and self.environment.reward_profile != "lap-time-v1":
             raise ValueError("wide_entry_curriculum requiere recompensa lap-time-v1.")
         if self.ppo.time_progress_mix and (

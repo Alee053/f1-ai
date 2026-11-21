@@ -2,6 +2,7 @@ import json
 from dataclasses import replace
 from types import SimpleNamespace
 
+import gymnasium as gym
 import numpy as np
 import pytest
 import torch
@@ -12,7 +13,8 @@ from f1_ai.agents import PPOAgent
 from f1_ai.artifacts import provenance, write_json
 from f1_ai.config import load_config
 from f1_ai.curriculum import WIDE_SECTOR_METERS, CornerCurriculum, CornerStart
-from f1_ai.environment import CircuitPool, make_env, observation_contract
+from f1_ai.environment import CircuitPool, NumericCarRacing, make_env, observation_contract
+from f1_ai.geometry import CircuitGeometry, TurnPreview
 from f1_ai.imitation import validate_dataset
 from f1_ai.plan_features import ReferenceTimeProgress
 from f1_ai.racing_line import ReferenceConfig
@@ -20,9 +22,275 @@ from f1_ai.rewards import (
     FrontLockPenalty,
     RearSlipPenalty,
     RoadContactPenalty,
+    RoadLearningReward,
     lap_time_step_reward,
 )
-from f1_ai.training import _initialize_policy, create_model, load_model, train
+from f1_ai.training import (
+    _initialize_policy,
+    create_model,
+    load_model,
+    make_training_environment,
+    train,
+)
+
+
+def test_training_prefers_useful_advancement_to_standing_still():
+    config = load_config("configs/formula-road-cuda.toml")
+    config = replace(
+        config,
+        circuits=replace(config.circuits, train=(0,)),
+        ppo=replace(config.ppo, no_progress_steps=150),
+    )
+
+    def discounted_rollout(pedal):
+        env = make_training_environment(config)
+        try:
+            env.reset(seed=42)
+            action = np.array([0.0, pedal], dtype=np.float32)
+            total = 0.0
+            for step in range(config.environment.max_steps):
+                _, reward, terminated, truncated, info = env.step(action)
+                total += reward * config.ppo.gamma**step
+                if terminated or truncated:
+                    return total, step + 1, info
+            pytest.fail("El episodio debe terminar dentro del horizonte.")
+        finally:
+            env.close()
+
+    idle_return, steps, idle = discounted_rollout(0.0)
+    rolling_return, _, rolling = discounted_rollout(0.3)
+    assert steps == 150 and idle["termination_reason"] == "no_progress"
+    assert rolling["termination_reason"] == "off_track"
+    assert rolling["forward_progress"] > 0.05
+    assert rolling_return > idle_return
+
+
+@pytest.mark.parametrize(("distance", "reward_delta"), [(10.0, 0.003 * 7**2), (60.0, 0.0)])
+def test_extra_pace_only_relaxes_the_speed_cost_on_straights(distance, reward_delta):
+    class RoadSample(gym.Env):
+        def __init__(self):
+            self.geometry = CircuitGeometry(np.array([[0, 0], [90, 0], [90, 80], [0, 80]]))
+            self.progress = SimpleNamespace(start=0.0, previous=distance)
+            self.road_contact_fraction = 1.0
+
+        def reset(self, *, seed=None, options=None):
+            self.previous_action = np.zeros(2)
+            return np.zeros(2), {}
+
+        def step(self, action):
+            self.previous_action = action.copy()
+            return (
+                np.zeros(2),
+                0.0,
+                False,
+                False,
+                {
+                    "forward_progress": 0.01,
+                    "track_length": self.geometry.length,
+                    "speed": 24.0,
+                    "slip_ratios": (0.0, 0.0, 0.0, 0.0),
+                },
+            )
+
+    command = np.array([0.1, 0.2])
+    rewards = []
+    for straight_pace in (0.0, 24.0):
+        env = RoadLearningReward(RoadSample(), 17.0, straight_pace_m_s=straight_pace)
+        env.reset()
+        rewards.append(env.step(command)[1])
+        np.testing.assert_array_equal(env.unwrapped.previous_action, command)
+    assert rewards[1] - rewards[0] == pytest.approx(reward_delta)
+
+
+def test_pedal_only_keeps_the_learned_steering_on_resume(tmp_path):
+    base = load_config("configs/formula-road-cuda.toml")
+    base = replace(
+        base,
+        environment=replace(base.environment, max_steps=8),
+        circuits=replace(base.circuits, train=(0,), validation=(100,)),
+        ppo=replace(
+            base.ppo,
+            device="cpu",
+            vec_env="dummy",
+            n_envs=1,
+            n_steps=16,
+            batch_size=16,
+            n_epochs=1,
+            total_timesteps=32,
+            eval_every=32,
+        ),
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    env = make_env(base.environment)
+    try:
+        model = create_model(base, env)
+        actor = model.policy
+        model.save(source / "model.zip")
+        write_json(source / "metadata.json", provenance(base, kind="ppo"))
+    finally:
+        env.close()
+
+    config = replace(base, ppo=replace(base.ppo, pedal_only=True))
+    output = tmp_path / "pedal"
+    with pytest.raises(ValueError, match="checkpoint con giro aprendido"):
+        train(config, output)
+    train(config, output, initial_model=source / "model.zip")
+    resumed = replace(config, ppo=replace(config.ppo, total_timesteps=48))
+    continuation = tmp_path / "continued"
+    train(resumed, continuation, resume_model=output / "model.zip")
+    trained = load_model(continuation / "model.zip", config).policy
+    for initial, current in zip(
+        actor.mlp_extractor.policy_net.parameters(),
+        trained.mlp_extractor.policy_net.parameters(),
+        strict=True,
+    ):
+        torch.testing.assert_close(initial, current, rtol=0, atol=0)
+    torch.testing.assert_close(
+        actor.action_net.weight[0], trained.action_net.weight[0], rtol=0, atol=0
+    )
+    torch.testing.assert_close(actor.action_net.bias[0], trained.action_net.bias[0], rtol=0, atol=0)
+    assert not torch.equal(actor.action_net.weight[1], trained.action_net.weight[1])
+
+
+def test_paced_reward_makes_progress_useful_and_ends_sustained_excursions():
+    config = load_config("configs/formula-road-cuda.toml")
+    config = replace(
+        config,
+        circuits=replace(config.circuits, train=(0,)),
+        ppo=replace(
+            config.ppo,
+            no_progress_steps=250,
+            learning_pace_m_s=14.0,
+            rear_slip_penalty=0.0,
+            front_lock_penalty=0.0,
+        ),
+    )
+    env = make_training_environment(config)
+    try:
+        returns = []
+        for pedal in (0.0, 0.18):
+            env.reset(seed=42)
+            total = 0.0
+            action = np.array([0.0, pedal], dtype=np.float32)
+            for step in range(config.environment.max_steps):
+                _, reward, terminated, truncated, info = env.step(action)
+                total += reward * config.ppo.gamma**step
+                if terminated or truncated:
+                    break
+            returns.append((total, info))
+        idle, rolling = returns
+        assert idle[1]["termination_reason"] == "no_progress"
+        assert rolling[1]["termination_reason"] == "off_track"
+        assert rolling[1]["off_track_steps"] == 25
+        assert rolling[1]["forward_progress"] > 0.02
+        assert rolling[0] > idle[0]
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize(("braking", "speed_range"), [(False, (6, 13.5)), (True, (15, 22.5))])
+def test_road_curriculum_places_students_before_curves_without_planning(
+    monkeypatch, braking, speed_range
+):
+    config = load_config("configs/formula-road-cuda.toml")
+    config = replace(
+        config,
+        circuits=replace(config.circuits, train=(0,)),
+        ppo=replace(
+            config.ppo,
+            corner_curriculum=True,
+            road_start_curriculum=True,
+            braking_curriculum=braking,
+            launch_curriculum=True,
+        ),
+    )
+
+    def reject_plan(*args):
+        pytest.fail("Las salidas por geometría no necesitan una trazada.")
+
+    monkeypatch.setattr(NumericCarRacing, "_track_plan", reject_plan)
+    env = make_training_environment(config)
+    try:
+        for seed in range(16):
+            observation, info = env.reset(seed=seed)
+            if info["training_sector"] and not info["training_launch"]:
+                assert observation.shape == (36,)
+                assert speed_range[0] <= info["speed"] <= speed_range[1]
+                assert env.unwrapped.road_contact_fraction >= 0.5
+                if braking:
+                    road = TurnPreview(env.unwrapped.geometry)
+                    station = env.unwrapped.progress.start
+                    assert road.ahead(station, 24.0) < np.deg2rad(11.0)
+                    assert road.ahead(station, 62.0) > np.deg2rad(33.0)
+                return
+        pytest.fail("El currículo debe incluir salidas en movimiento.")
+    finally:
+        env.close()
+
+
+def test_road_preview_adds_turns_and_previous_commands_without_a_plan(monkeypatch):
+    config = load_config("configs/formula-road-cuda.toml")
+    preview = replace(config.environment, observation_profile="road-preview-v6")
+
+    def reject_plan(*args):
+        pytest.fail("La vista geométrica no calcula una trazada.")
+
+    monkeypatch.setattr(NumericCarRacing, "_track_plan", reject_plan)
+    base_env = make_env(config.environment)
+    preview_env = make_env(preview)
+    try:
+        base, _ = base_env.reset(seed=116)
+        obs, _ = preview_env.reset(seed=116)
+        version, names = observation_contract(preview)
+        assert version == 7 and obs.shape == (len(names),) == (48,)
+        np.testing.assert_array_equal(obs[:36], base)
+        np.testing.assert_array_equal(obs[36:38], np.zeros(2))
+        np.testing.assert_allclose(np.linalg.norm(obs[38:].reshape(-1, 2), axis=1), 1, atol=1e-6)
+        action = np.array([0.18, 0.4], dtype=np.float32)
+        base, *_ = base_env.step(action)
+        obs, *_ = preview_env.step(action)
+        np.testing.assert_array_equal(obs[:36], base)
+        np.testing.assert_array_equal(obs[36:38], action)
+    finally:
+        preview_env.close()
+        base_env.close()
+
+
+def test_road_preview_warm_start_preserves_the_checkpoint_actions(tmp_path):
+    base = load_config("configs/formula-road-learning-braking-cuda.toml")
+    base = replace(base, ppo=replace(base.ppo, device="cpu"))
+    preview = replace(
+        base, environment=replace(base.environment, observation_profile="road-preview-v6")
+    )
+    old_env = make_env(base.environment)
+    new_env = make_env(preview.environment)
+    try:
+        old_obs, _ = old_env.reset(seed=7)
+        new_obs, _ = new_env.reset(seed=7)
+        original = create_model(base, old_env)
+        checkpoint = tmp_path / "model.zip"
+        original.save(checkpoint)
+        metadata = provenance(base, kind="ppo")
+        write_json(tmp_path / "metadata.json", metadata)
+
+        expanded = create_model(preview, new_env)
+        assert _initialize_policy(expanded, preview, checkpoint, metadata) == (
+            "zero_initialized_road_preview_inputs",
+        )
+        for extractor in (
+            expanded.policy.mlp_extractor.policy_net,
+            expanded.policy.mlp_extractor.value_net,
+        ):
+            assert torch.count_nonzero(extractor[0].weight[:, 36:]).item() == 0
+        for _ in range(4):
+            action, _ = original.predict(old_obs, deterministic=True)
+            np.testing.assert_allclose(action, PPOAgent(expanded).action(new_obs), atol=1e-6)
+            old_obs = old_env.step(action)[0]
+            new_obs = new_env.step(action)[0]
+    finally:
+        old_env.close()
+        new_env.close()
 
 
 def test_planned_policy_controls_steering_and_pedal_directly():

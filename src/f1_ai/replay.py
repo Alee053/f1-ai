@@ -1,10 +1,13 @@
 """Vídeo de una política cargada bajo su propio contrato de control."""
 
+import csv
 import hashlib
 import os
 import shutil
 import subprocess
 import tempfile
+from dataclasses import replace
+from math import ceil
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +20,7 @@ from f1_ai.camera import ChaseCamera, validate_view
 from f1_ai.config import RACING_RESIDUAL, ExperimentConfig
 from f1_ai.environment import NumericCarRacing
 from f1_ai.residual_env import ResidualRacingEnv
+from f1_ai.track_layout import TrackLayout
 from f1_ai.training import load_model, read_model_metadata
 
 
@@ -65,6 +69,7 @@ def record_replay(
     camera: str = "top",
     grid_m: float = 1.0,
     device: str | None = None,
+    track: Path | None = None,
 ) -> dict:
     validate_view(camera, grid_m)
     encoder = shutil.which("ffmpeg")
@@ -77,13 +82,21 @@ def record_replay(
         raise ValueError(f"Use una salida MP4 y un salto de cuadros que divida {FPS}.")
     metadata_path = output.with_suffix(".json")
     snapshot_path = output.with_suffix(".png")
-    if any(path.exists() for path in (output, metadata_path, snapshot_path)):
+    telemetry_path = output.with_suffix(".csv") if track is not None else None
+    paths = (output, metadata_path, snapshot_path, telemetry_path)
+    if any(path.exists() for path in paths if path is not None):
         raise FileExistsError("Ya existe un archivo de esta exportación.")
+    layout = TrackLayout.load(track) if track is not None else None
+    environment = config.environment
+    if layout is not None:
+        # Dimensiona el horizonte a una vuelta larga sin cambiar el contrato del modelo.
+        max_steps = max(environment.max_steps, ceil(layout.geometry.length / 12.0 * FPS))
+        environment = replace(environment, max_steps=max_steps)
     output.parent.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     model = load_model(model_path, config, device=device)
     agent = PPOAgent(model)
-    physics = ReplayPhysics(config.environment, render_mode="rgb_array")
+    physics = ReplayPhysics(environment, render_mode="rgb_array", track_layout=layout)
     env = ResidualRacingEnv(physics) if residual else physics
     view = ChaseCamera(grid_m) if camera == "chase" else None
     surface = pygame.Surface((960, 540)) if view is not None else None
@@ -97,12 +110,14 @@ def record_replay(
         label = "PPO residual"
     if config.environment.formula is not None:
         label = f"Formula   /   {label}"
-    label = f"{label}   /   Pista {seed}"
+    track_name = layout.name if layout is not None else f"Pista {seed}"
+    label = f"{label}   /   {track_name}"
     process = None
     frames = 0
     max_speed = max_slip = 0.0
     lock_steps = 0
     snapshot = None
+    telemetry = []
     try:
         fps = FPS // stride
         observation, info = env.reset(seed=seed)
@@ -174,6 +189,18 @@ def record_replay(
                 slip = max((abs(value) for value in state.get("slip_ratios", ())), default=0.0)
                 max_slip = max(max_slip, slip)
                 lock_steps += int(any(state.get("locked_wheels", ())))
+                if telemetry_path is not None:
+                    telemetry.append(
+                        (
+                            physics.elapsed_steps,
+                            state["simulated_seconds"],
+                            *state["position"],
+                            state["speed"],
+                            *map(float, action),
+                            state["forward_progress"],
+                            physics.road_contact_fraction,
+                        )
+                    )
                 if physics.elapsed_steps % stride == 0 or finished:
                     frame = frame_for(state, action)
                     emit(frame)
@@ -194,6 +221,23 @@ def record_replay(
             os.link(staging, output)
         image = frame if snapshot is None else snapshot
         pygame.image.save(pygame.surfarray.make_surface(image.swapaxes(0, 1)), snapshot_path)
+        if telemetry_path is not None:
+            with telemetry_path.open("x", newline="", encoding="utf-8") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(
+                    (
+                        "step",
+                        "simulated_seconds",
+                        "x",
+                        "y",
+                        "speed",
+                        "steering",
+                        "acceleration",
+                        "forward_progress",
+                        "road_contact",
+                    )
+                )
+                writer.writerows(telemetry)
         result = {
             "model": str(model_path),
             "model_sha256": hashlib.sha256(model_path.read_bytes()).hexdigest(),
@@ -215,6 +259,14 @@ def record_replay(
             "neural_policy_only": not residual,
             "hud_reward": "native CarRacing score" if view is None else None,
         }
+        if layout is not None:
+            result.update(
+                track_name=layout.name,
+                track_length_m=layout.geometry.length,
+                track_width_m=layout.width_m,
+                forward_progress=info["forward_progress"],
+                max_seconds=environment.max_steps / FPS,
+            )
         write_json(metadata_path, result)
         return result
     finally:

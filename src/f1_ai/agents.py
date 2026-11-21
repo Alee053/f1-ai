@@ -11,6 +11,7 @@ from f1_ai.environment import (
     PLANNED_OBSERVATION_NAMES,
     RACING_OBSERVATION_NAMES,
     ROAD_OBSERVATION_NAMES,
+    ROAD_PREVIEW_OBSERVATION_NAMES,
     WAYPOINT_SCALE,
 )
 from f1_ai.vehicle import GRAVITY, aerodynamic_forces
@@ -105,7 +106,7 @@ class PursuitAgent:
         return float(np.clip(force / available, 0.0, 0.7))
 
 
-class PPOAgent:
+class SB3Agent:
     def __init__(self, model):
         from f1_ai.residual_env import RESIDUAL_OBSERVATION_NAMES
 
@@ -118,6 +119,7 @@ class PPOAgent:
                 PLANNED_OBSERVATION_NAMES,
                 CORRIDOR_OBSERVATION_NAMES,
                 ROAD_OBSERVATION_NAMES,
+                ROAD_PREVIEW_OBSERVATION_NAMES,
             )
         }
         if model.observation_space.shape not in valid_shapes or model.action_space.shape != (2,):
@@ -127,3 +129,6 @@ class PPOAgent:
     def action(self, observation: np.ndarray) -> np.ndarray:
         action, _ = self.model.predict(observation, deterministic=True)
         return np.asarray(action, dtype=np.float32)
+
+
+PPOAgent = SB3Agent

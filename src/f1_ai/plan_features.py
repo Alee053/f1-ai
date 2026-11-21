@@ -14,10 +14,14 @@ PREVIEW_M = np.array([6.0, 15.0, 30.0, 60.0, 100.0])
 class CorridorFeatures:
     """Bordes reales del asfalto muestreados en las estaciones del eje."""
 
-    def __init__(self, road: CircuitGeometry, road_angles: np.ndarray):
+    def __init__(
+        self, road: CircuitGeometry, road_angles: np.ndarray, *, edges: np.ndarray | None = None
+    ):
         self.road = road
-        offset = TRACK_WIDTH * np.column_stack((np.cos(road_angles), np.sin(road_angles)))
-        self.edges = np.stack((road.points - offset, road.points + offset), axis=1)
+        if edges is None:
+            offset = TRACK_WIDTH * np.column_stack((np.cos(road_angles), np.sin(road_angles)))
+            edges = np.stack((road.points - offset, road.points + offset), axis=1)
+        self.edges = edges
 
     def observation(self, distance, position, forward, right):
         road = self.road
@@ -29,6 +33,15 @@ class CorridorFeatures:
         points = begin + (end - begin) * fraction[:, None, None]
         relative = (points - position) @ np.column_stack((right, forward))
         return (relative / (PREVIEW_M + TRACK_WIDTH)[:, None, None]).ravel()
+
+    def road_turns(self, distance, tangent):
+        """Cambios de dirección del asfalto relativos a la tangente local."""
+        road = self.road
+        stations = (distance + PREVIEW_M) % road.length
+        segment = np.searchsorted(road.cumulative, stations, side="right") - 1
+        future = road.tangents[segment]
+        right = np.array([tangent[1], -tangent[0]])
+        return (future @ np.column_stack((right, tangent))).ravel()
 
 
 class ReferenceTimeProgress:

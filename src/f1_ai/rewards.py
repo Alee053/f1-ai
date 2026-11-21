@@ -1,12 +1,122 @@
 """Objetivo de tiempo con costes menores por controles bruscos y slip excesivo."""
 
+from math import radians
+
 import gymnasium as gym
 import numpy as np
 
 from f1_ai.config import ReferenceDrivingConfig
+from f1_ai.geometry import TurnPreview
 from f1_ai.plan_features import ReferenceTimeProgress, track_plan
 
 LAP_PROGRESS_POINTS = 1000.0
+MINIMUM_PROGRESS_M = 4.0
+NO_PROGRESS_COST = 120.0
+STRAIGHT_LOOKAHEAD_M = 50.0
+STRAIGHT_TURN_ANGLE = radians(12.0)
+CURVE_TURN_ANGLE = radians(30.0)
+
+
+class RoadLearningReward(gym.Wrapper):
+    """Enseña avance sobre asfalto con un límite de ritmo suave."""
+
+    off_track_steps = 25
+    stall_cost = 24.0
+
+    def __init__(self, env: gym.Env, pace_m_s: float, *, straight_pace_m_s: float = 0.0):
+        super().__init__(env)
+        self.pace_m_s = pace_m_s
+        self.straight_pace_m_s = straight_pace_m_s
+        self.turn_preview = None
+        self.previous_progress_m = 0.0
+        self.consecutive_off_track = 0
+
+    def reset(self, *, seed=None, options=None):
+        self.previous_progress_m = 0.0
+        self.consecutive_off_track = 0
+        observation, info = self.env.reset(seed=seed, options=options)
+        if self.straight_pace_m_s:
+            self.turn_preview = TurnPreview(self.env.unwrapped.geometry)
+        return observation, info
+
+    def step(self, action):
+        physics = self.env.unwrapped
+        previous_action = physics.previous_action
+        observation, _, terminated, truncated, info = self.env.step(action)
+        distance = info["forward_progress"] * info["track_length"]
+        gain = distance - self.previous_progress_m
+        self.previous_progress_m = distance
+        contact = physics.road_contact_fraction
+        if contact >= 0.5:
+            self.consecutive_off_track = 0
+            delta = physics.previous_action - previous_action
+            slip_excess = min(2.0, max(0.0, max(map(abs, info["slip_ratios"])) - 0.30))
+            pace = self.pace_m_s
+            if self.turn_preview is not None:
+                progress = physics.progress
+                turn = self.turn_preview.ahead(
+                    progress.start + progress.previous, STRAIGHT_LOOKAHEAD_M
+                )
+                fraction = (CURVE_TURN_ANGLE - turn) / (CURVE_TURN_ANGLE - STRAIGHT_TURN_ANGLE)
+                pace += (self.straight_pace_m_s - pace) * min(1.0, max(0.0, fraction))
+            speed_excess = max(0.0, info["speed"] - pace)
+            reward = (
+                gain
+                - 0.04
+                - 0.20 * (1.0 - contact)
+                - 0.04 * float(delta @ delta)
+                - 0.035 * slip_excess**2
+                - 0.003 * speed_excess**2
+            )
+        else:
+            self.consecutive_off_track += 1
+            reward = -0.35
+            if self.consecutive_off_track >= self.off_track_steps and not (terminated or truncated):
+                terminated = True
+                info = {**info, "termination_reason": "off_track"}
+        if terminated:
+            reward += 30.0 if info["lap_complete"] else -12.0
+        return observation, reward, terminated, truncated, info
+
+
+class NoProgressTermination(gym.Wrapper):
+    """Acota los episodios de entrenamiento sin avance válido."""
+
+    def __init__(self, env: gym.Env, patience_steps: int, *, cost: float = NO_PROGRESS_COST):
+        super().__init__(env)
+        self.patience_steps = patience_steps
+        self.cost = cost
+        self.last_progress_m = 0.0
+        self.new_progress_m = 0.0
+        self.steps_without_progress = 0
+
+    def reset(self, *, seed=None, options=None):
+        self.last_progress_m = 0.0
+        self.new_progress_m = 0.0
+        self.steps_without_progress = 0
+        return self.env.reset(seed=seed, options=options)
+
+    def step(self, action):
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        progress_m = info["forward_progress"] * info["track_length"]
+        on_road = self.env.unwrapped.road_contact_fraction >= 0.5
+        if on_road:
+            self.new_progress_m += progress_m - self.last_progress_m
+        self.last_progress_m = progress_m
+        if self.new_progress_m >= MINIMUM_PROGRESS_M:
+            self.new_progress_m = 0.0
+            self.steps_without_progress = 0
+        else:
+            self.steps_without_progress += 1
+        if (
+            on_road
+            and not (terminated or truncated)
+            and self.steps_without_progress >= self.patience_steps
+        ):
+            terminated = True
+            reward -= self.cost
+            info = {**info, "termination_reason": "no_progress"}
+        return observation, reward, terminated, truncated, info
 
 
 class RoadContactPenalty(gym.Wrapper):

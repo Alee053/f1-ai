@@ -9,7 +9,7 @@ from pathlib import Path
 
 from gymnasium.envs.box2d.car_racing import TRACK_WIDTH
 
-from f1_ai.agents import PPOAgent, PursuitAgent, RandomAgent, ZeroCorrectionAgent
+from f1_ai.agents import PursuitAgent, RandomAgent, SB3Agent, ZeroCorrectionAgent
 from f1_ai.artifacts import create_directory, provenance, write_json
 from f1_ai.config import RACING_RESIDUAL, load_config
 from f1_ai.environment import make_env
@@ -24,11 +24,11 @@ def parser() -> argparse.ArgumentParser:
     benchmark = commands.add_parser("benchmark", help="Medir pasos físicos sin renderizado")
     benchmark.add_argument("--steps", type=int, default=2000)
     benchmark.add_argument("--output", type=Path, required=True)
-    evaluate = commands.add_parser("evaluate", help="Evaluar referencias o un modelo PPO")
+    evaluate = commands.add_parser("evaluate", help="Evaluar referencias o una política guardada")
     evaluate.add_argument(
         "--agents",
         nargs="+",
-        choices=["random", "pursuit", "reference", "ppo", "bc", "bc-ppo"],
+        choices=["random", "pursuit", "reference", "ppo", "bc", "bc-ppo", "neat", "sac"],
         default=["random", "pursuit"],
     )
     evaluate.add_argument("--split", choices=["train", "validation", "test"], default="validation")
@@ -39,7 +39,7 @@ def parser() -> argparse.ArgumentParser:
         "--min-completion", type=float, help="Exigir una tasa mínima a cada agente"
     )
     evaluate.add_argument(
-        "--model", type=Path, help="Checkpoint local de confianza con metadata.json"
+        "--model", type=Path, help="Checkpoint local de confianza o política NEAT JSON"
     )
     training = commands.add_parser("train", help="Entrenar PPO o ejecutar una prueba de 512 pasos")
     training.add_argument("--smoke", action="store_true", help="Prueba de integración de 512 pasos")
@@ -47,7 +47,16 @@ def parser() -> argparse.ArgumentParser:
     training.add_argument("--seed", type=int)
     training.add_argument("--timesteps", type=int)
     training.add_argument(
+        "--plateau-evals",
+        type=int,
+        default=0,
+        help="Detener PPO después de este número de validaciones sin mejora en vuelta",
+    )
+    training.add_argument(
         "--rehearsal-dataset", type=Path, help="Alternar PPO con repaso BC de un dataset train"
+    )
+    training.add_argument(
+        "--rehearsal-fade-steps", type=int, help="Pasos hasta reducir a cero el repaso BC"
     )
     initialization = training.add_mutually_exclusive_group()
     initialization.add_argument(
@@ -63,6 +72,21 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Permitir cambios en la física Formula v1 al usar --initial-model",
     )
+    evolution = commands.add_parser(
+        "train-neat", help="Evolucionar una política de mandos directos"
+    )
+    evolution.add_argument("--output", type=Path, required=True)
+    evolution.add_argument("--seed", type=int)
+    evolution.add_argument("--timesteps", type=int)
+    evolution.add_argument("--rollout-steps", type=int, default=512)
+    evolution.add_argument("--neat-config", type=Path, default=Path("configs/neat-road.ini"))
+    sac = commands.add_parser("train-sac", help="Entrenar SAC con mandos directos y sin maestro")
+    sac.add_argument("--output", type=Path, required=True)
+    sac.add_argument("--seed", type=int)
+    sac.add_argument("--timesteps", type=int)
+    sac.add_argument(
+        "--resume-model", type=Path, help="Modelo SAC con su búfer en la misma corrida"
+    )
     plot = commands.add_parser("plot", help="Exportar figuras de una evaluación existente")
     plot.add_argument("--evaluation", type=Path, required=True)
     training_plot = commands.add_parser(
@@ -75,19 +99,32 @@ def parser() -> argparse.ArgumentParser:
     demonstrations.add_argument("--output", type=Path, required=True)
     demonstrations.add_argument("--target-speed", type=float, default=30.0)
     demonstrations.add_argument("--lateral-acceleration", type=float, default=8.0)
-    demonstrations.add_argument("--teacher", choices=["pursuit", "racing"], default="pursuit")
+    demonstrations.add_argument(
+        "--teacher", choices=["pursuit", "racing", "ppo"], default="pursuit"
+    )
+    demonstrations.add_argument("--teacher-model", type=Path, help="Checkpoint local del maestro")
     imitation = commands.add_parser("clone", help="Aprender el actor por imitación, antes de PPO")
     imitation.add_argument("--dataset", type=Path, required=True)
     imitation.add_argument("--output", type=Path, required=True)
     imitation.add_argument("--epochs", type=int, default=50)
     imitation.add_argument("--learning-rate", type=float, default=1e-3)
     imitation.add_argument("--dagger-rounds", type=int, default=0)
+    imitation.add_argument(
+        "--teacher-model", type=Path, help="Checkpoint del maestro PPO para DAgger"
+    )
     imitation.add_argument("--seed", type=int)
+    launch = commands.add_parser(
+        "calibrate-launch", help="Ajustar el pedal de salida de un alumno road-v5"
+    )
+    launch.add_argument("--model", type=Path, required=True)
+    launch.add_argument("--dataset", type=Path, required=True)
+    launch.add_argument("--output", type=Path, required=True)
     replay = commands.add_parser("replay", help="Exportar una vuelta de la red neuronal en MP4")
     replay.add_argument("--model", type=Path, required=True)
     replay.add_argument("--output", type=Path, required=True)
     replay.add_argument("--seed", type=int, default=100)
     replay.add_argument("--device", choices=["cpu", "cuda"])
+    replay.add_argument("--track", type=Path, help="Circuito cerrado en metros, en formato JSON")
     play = commands.add_parser("play", help="Conducir con mando Xbox o teclado y ajustar la física")
     play.add_argument("--seed", type=int, default=0)
     play.add_argument("--output", type=Path)
@@ -183,18 +220,26 @@ def run_evaluate(config, args):
         raise ValueError("El agente reference requiere el perfil de control racing-residual-v1.")
     if args.min_completion is not None and not 0 <= args.min_completion <= 1:
         raise ValueError("La finalización mínima debe pertenecer a [0, 1].")
-    learned = set(args.agents) & {"ppo", "bc", "bc-ppo"}
+    learned = set(args.agents) & {"ppo", "bc", "bc-ppo", "neat", "sac"}
     if len(learned) > 1:
         raise ValueError("Un checkpoint solo puede evaluarse bajo una etiqueta de método.")
     if learned and args.model is None:
         raise ValueError("La evaluación de la red requiere --model.")
     if args.model is not None and not learned:
         raise ValueError("Se indicó un modelo sin incluir una red en --agents.")
-    model = None
-    if args.model is not None:
+    agent = None
+    device = None
+    if "neat" in learned:
+        from f1_ai.evolution import load_neat_agent
+
+        agent = load_neat_agent(args.model, config)
+        device = "cpu"
+    elif args.model is not None:
         from f1_ai.training import load_model, read_model_metadata
 
         model_metadata = read_model_metadata(args.model)
+        if ("sac" in learned) != (model_metadata["kind"] == "sac"):
+            raise ValueError("La etiqueta sac requiere un checkpoint SAC del proyecto.")
         root = model_metadata.get("initial_policy", {}).get("root_kind")
         imitated = model_metadata["kind"] in {"behavior_cloning", "dagger"}
         if "bc" in learned and not imitated:
@@ -204,6 +249,8 @@ def run_evaluate(config, args):
         if "ppo" in learned and (imitated or root in {"behavior_cloning", "dagger"}):
             raise ValueError("El checkpoint incluye imitación: use bc o bc-ppo para identificarlo.")
         model = load_model(args.model, config)
+        agent = SB3Agent(model)
+        device = str(model.device)
     output = create_directory(args.output)
     factories = {}
     for name in args.agents:
@@ -217,8 +264,8 @@ def run_evaluate(config, args):
                 args.reference_lateral_acceleration,
                 environment=config.environment,
             )
-        elif name in learned:
-            factories[name] = lambda seed: PPOAgent(model)
+        elif agent is not None and name in learned:
+            factories[name] = lambda seed: agent
     write_json(
         output / "metadata.json",
         {
@@ -233,7 +280,7 @@ def run_evaluate(config, args):
             "model_sha256": hashlib.sha256(args.model.read_bytes()).hexdigest()
             if args.model is not None
             else None,
-            "inference_device": str(model.device) if model is not None else None,
+            "inference_device": device,
         },
     )
     results = evaluate_agents(
@@ -261,18 +308,25 @@ def main():
 
             print(json.dumps(connected_controllers(), indent=2))
             return
-        config_path = args.config or Path(
-            "configs/formula.toml"
-            if args.command in {"play", "plan-reference", "reference"}
-            else "configs/ppo.toml"
-        )
+        default_config = "configs/ppo.toml"
+        if args.command in {"play", "plan-reference", "reference"}:
+            default_config = "configs/formula.toml"
+        elif args.command == "train-neat":
+            default_config = "configs/formula-road-cuda.toml"
+        elif args.command == "train-sac":
+            default_config = "configs/formula-road-learning-cuda.toml"
+        config_path = args.config or Path(default_config)
         config = load_config(config_path)
-        if args.command in {"train", "clone"} and getattr(args, "seed", None) is not None:
+        if args.command in {"train", "train-neat", "train-sac", "clone"} and args.seed is not None:
             config = replace(config, ppo=replace(config.ppo, seed=args.seed))
         if getattr(args, "timesteps", None) is not None:
-            if args.smoke:
+            if getattr(args, "smoke", False):
                 raise ValueError("La prueba smoke fija su propio número de pasos.")
             config = replace(config, ppo=replace(config.ppo, total_timesteps=args.timesteps))
+        if getattr(args, "rehearsal_fade_steps", None) is not None:
+            config = replace(
+                config, ppo=replace(config.ppo, rehearsal_fade_steps=args.rehearsal_fade_steps)
+            )
         match args.command:
             case "plan-reference" | "reference":
                 from f1_ai.racing_controller import FollowerConfig
@@ -343,10 +397,23 @@ def main():
                             resume_model=args.resume_model,
                             rehearsal_dataset=args.rehearsal_dataset,
                             transfer_vehicle=args.transfer_vehicle,
+                            plateau_patience=args.plateau_evals,
                         ),
                         indent=2,
                     )
                 )
+            case "train-neat":
+                from f1_ai.evolution import train_neat
+
+                result = train_neat(
+                    config, args.output, args.neat_config, rollout_steps=args.rollout_steps
+                )
+                print(json.dumps(result, indent=2, allow_nan=False))
+            case "train-sac":
+                from f1_ai.soft_actor_critic import train_sac
+
+                result = train_sac(config, args.output, resume_model=args.resume_model)
+                print(json.dumps(result, indent=2, allow_nan=False))
             case "plot":
                 from f1_ai.plotting import plot_evaluation
 
@@ -365,6 +432,7 @@ def main():
                     target_speed=args.target_speed,
                     lateral_acceleration=args.lateral_acceleration,
                     teacher_kind=args.teacher,
+                    teacher_model=args.teacher_model,
                 )
                 print(json.dumps(result, indent=2))
             case "clone":
@@ -377,8 +445,14 @@ def main():
                     epochs=args.epochs,
                     learning_rate=args.learning_rate,
                     dagger_rounds=args.dagger_rounds,
+                    teacher_model=args.teacher_model,
                 )
                 print(json.dumps(result, indent=2))
+            case "calibrate-launch":
+                from f1_ai.imitation import calibrate_launch
+
+                result = calibrate_launch(config, args.model, args.dataset, args.output)
+                print(json.dumps(result, indent=2, allow_nan=False))
             case "replay":
                 from f1_ai.replay import record_replay
 
@@ -392,6 +466,7 @@ def main():
                             camera=args.camera,
                             grid_m=args.grid_meters,
                             device=args.device,
+                            track=args.track,
                         ),
                         indent=2,
                     )

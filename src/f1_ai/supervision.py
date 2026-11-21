@@ -24,10 +24,13 @@ class ActorRehearsal:
         self.actions = torch.as_tensor(data["actions"], dtype=torch.float32, device=model.device)
         self.parameters = actor_parameters(model.policy)
         self.optimizer = torch.optim.Adam(self.parameters, lr=learning_rate)
+        self.learning_rate = learning_rate
         self.generator = torch.Generator().manual_seed(seed)
         self.batch_size, self.updates = batch_size, updates
 
-    def update(self, policy):
+    def update(self, policy, *, weight=1.0):
+        for group in self.optimizer.param_groups:
+            group["lr"] = self.learning_rate * weight
         policy.set_training_mode(True)
         total = 0.0
         for _ in range(self.updates):
@@ -49,17 +52,25 @@ class ActorRehearsal:
 class RehearsalPPO(PPO):
     """Alterna PPO estándar y repaso BC; no modifica la función de pérdida de PPO."""
 
+    rehearsal_fade_steps = 0
+
     def _excluded_save_params(self):
         return [*super()._excluded_save_params(), "actor_rehearsal"]
 
     def train(self):
-        if getattr(self, "actor_rehearsal", None) is None:
+        weight = 1.0
+        if self.rehearsal_fade_steps:
+            weight = max(0.0, 1.0 - self.num_timesteps / self.rehearsal_fade_steps)
+        rehearsal = getattr(self, "actor_rehearsal", None)
+        if weight and rehearsal is None:
             raise RuntimeError(
                 "PPO con repaso requiere cargar sus demostraciones antes de aprender."
             )
         super().train()
-        loss = self.actor_rehearsal.update(self.policy)
-        self.logger.record("train/rehearsal_mse", loss)
+        self.logger.record("train/rehearsal_weight", weight)
+        if weight:
+            loss = rehearsal.update(self.policy, weight=weight)
+            self.logger.record("train/rehearsal_mse", loss)
 
 
 def fit_actor(

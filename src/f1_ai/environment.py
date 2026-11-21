@@ -16,13 +16,16 @@ from f1_ai.config import (
     RACING_RESIDUAL,
     REFERENCE_OBSERVATIONS,
     ROAD_OBSERVATION,
+    ROAD_OBSERVATIONS,
+    ROAD_PREVIEW_OBSERVATION,
     EnvironmentConfig,
     ReferenceDrivingConfig,
 )
-from f1_ai.curriculum import CornerStart
+from f1_ai.curriculum import CornerStart, RoadStart
 from f1_ai.geometry import CircuitGeometry, LapProgress
 from f1_ai.plan_features import PREVIEW_M, CorridorFeatures, PlanFeatures, track_plan
 from f1_ai.rewards import lap_time_step_reward
+from f1_ai.track_layout import TrackLayout
 
 OBSERVATION_VERSION = 1
 LOOKAHEAD_METERS = np.array([8.0, 16.0, 32.0, 48.0])
@@ -86,9 +89,17 @@ ROAD_EDGE_NAMES = tuple(
 )
 CORRIDOR_OBSERVATION_NAMES = (*PLANNED_OBSERVATION_NAMES, *ROAD_EDGE_NAMES)
 ROAD_OBSERVATION_NAMES = (*VEHICLE_OBSERVATION_NAMES, *ROAD_EDGE_NAMES)
+ROAD_PREVIEW_OBSERVATION_NAMES = (
+    *ROAD_OBSERVATION_NAMES,
+    "previous_steering",
+    "previous_pedal",
+    *(f"road_turn_{int(distance)}_{axis}" for distance in PREVIEW_M for axis in ("sin", "cos")),
+)
 
 
 def _direct_observation_contract(config: EnvironmentConfig) -> tuple[int, tuple[str, ...]]:
+    if config.observation_profile == ROAD_PREVIEW_OBSERVATION:
+        return 7, ROAD_PREVIEW_OBSERVATION_NAMES
     if config.observation_profile == ROAD_OBSERVATION:
         return 6, ROAD_OBSERVATION_NAMES
     if config.observation_profile == CORRIDOR_OBSERVATION:
@@ -117,15 +128,33 @@ class NumericCarRacing(CarRacing):
     ambos contratos se verifican contra la versión fijada de Gymnasium.
     """
 
-    def __init__(self, config: EnvironmentConfig, render_mode: str | None = None):
+    def __init__(
+        self,
+        config: EnvironmentConfig,
+        render_mode: str | None = None,
+        *,
+        track_layout: TrackLayout | None = None,
+    ):
         if render_mode not in (None, "human", "rgb_array"):
             raise ValueError("El modo de renderizado debe ser human, rgb_array o None.")
+        if track_layout is not None and (
+            config.observation_profile not in ROAD_OBSERVATIONS
+            or config.control_profile != "direct"
+        ):
+            raise ValueError(
+                "Un circuito importado requiere observaciones viales y mandos directos."
+            )
         super().__init__(
             render_mode=render_mode,
             continuous=True,
             lap_complete_percent=config.minimum_coverage,
         )
         self.config = config
+        self.track_layout = track_layout
+        self.playfield = PLAYFIELD
+        if track_layout is not None:
+            self.playfield = max(PLAYFIELD, float(np.abs(track_layout.edges).max()) + 65.0)
+            self.road_color = np.array([63, 69, 80])
         self.observation_space = spaces.Box(
             -1.0, 1.0, shape=(len(_direct_observation_contract(config)[1]),), dtype=np.float32
         )
@@ -133,7 +162,7 @@ class NumericCarRacing(CarRacing):
         self.geometry: CircuitGeometry | None = None
         self._plan_features: PlanFeatures | None = None
         self._corridor_features: CorridorFeatures | None = None
-        self._corner_start: CornerStart | None = None
+        self._corner_start: CornerStart | RoadStart | None = None
         self.progress: LapProgress | None = None
         self.elapsed_steps = 0
         self.off_track_steps = 0
@@ -141,6 +170,48 @@ class NumericCarRacing(CarRacing):
         self._consecutive_off_track = 0
         self._episode_done = False
         self.previous_action = np.zeros(2, dtype=np.float32)
+
+    def _create_track(self):
+        layout = self.track_layout
+        if layout is None:
+            return super()._create_track()
+        self.road = []
+        self.track = [
+            (0.0, float(angle), float(x), float(y))
+            for angle, (x, y) in zip(layout.angles, layout.geometry.points, strict=True)
+        ]
+        for index, (left, right) in enumerate(layout.edges):
+            previous_left, previous_right = layout.edges[index - 1]
+            vertices = [tuple(point) for point in (left, right, previous_right, previous_left)]
+            self.fd_tile.shape.vertices = vertices
+            tile = self.world.CreateStaticBody(fixtures=self.fd_tile)
+            tile.userData = tile
+            tile.color = self.road_color + 2 * (index % 3)
+            tile.road_visited = False
+            tile.road_friction = 1.0
+            tile.idx = index
+            tile.fixtures[0].sensor = True
+            self.road_poly.append((vertices, tile.color))
+            self.road.append(tile)
+
+        start_left, start_right = layout.edges[0]
+        squares = np.linspace(start_left, start_right, 11)
+        depth = 1.0 * layout.geometry.tangents[0]
+        for index, (left, right) in enumerate(zip(squares[:-1], squares[1:], strict=True)):
+            color = (232, 235, 240) if index % 2 == 0 else (37, 43, 54)
+            vertices = [tuple(point) for point in (left, right, right + depth, left + depth)]
+            self.road_poly.append((vertices, color))
+        return True
+
+    def _render_road(self, zoom, translation, angle):
+        if self.track_layout is None:
+            super()._render_road(zoom, translation, angle)
+            return
+        self.surf.fill((113, 124, 133))
+        for vertices, color in self.road_poly:
+            self._draw_colored_polygon(
+                self.surf, vertices, tuple(map(int, color)), zoom, translation, angle
+            )
 
     def _render(self, mode: str):
         # CarRacing.step llama este modo incluso si render_mode es None.
@@ -150,7 +221,11 @@ class NumericCarRacing(CarRacing):
 
     def _road_geometry(self) -> CircuitGeometry:
         if self.geometry is None:
-            self.geometry = CircuitGeometry(np.array([tile[2:4] for tile in self.track]))
+            self.geometry = (
+                self.track_layout.geometry
+                if self.track_layout is not None
+                else CircuitGeometry(np.array([tile[2:4] for tile in self.track]))
+            )
         return self.geometry
 
     def _track_plan(self, reference: ReferenceDrivingConfig):
@@ -169,7 +244,7 @@ class NumericCarRacing(CarRacing):
         velocity = np.array(hull.linearVelocity)
         profile = self.config.observation_profile
         planned = profile in REFERENCE_OBSERVATIONS
-        road_only = profile == ROAD_OBSERVATION
+        road_only = profile in ROAD_OBSERVATIONS
         racing = profile != "legacy"
         lookahead = RACING_LOOKAHEAD_METERS if racing else LOOKAHEAD_METERS
         if planned:
@@ -196,13 +271,18 @@ class NumericCarRacing(CarRacing):
             if not (planned or road_only):
                 extra.extend(self.previous_action)
         corridor = ()
-        if profile in {CORRIDOR_OBSERVATION, ROAD_OBSERVATION}:
+        if profile == CORRIDOR_OBSERVATION or road_only:
             if self._corridor_features is None:
                 angles = np.array([tile[1] for tile in self.track])
-                self._corridor_features = CorridorFeatures(geometry, angles)
+                edges = self.track_layout.edges if self.track_layout is not None else None
+                self._corridor_features = CorridorFeatures(geometry, angles, edges=edges)
             corridor = self._corridor_features.observation(
                 projection.distance, position, forward, right
             )
+        preview = ()
+        if profile == ROAD_PREVIEW_OBSERVATION:
+            turns = self._corridor_features.road_turns(projection.distance, projection.tangent)
+            preview = (*self.previous_action, *turns)
         state = np.array(
             [
                 np.dot(velocity, forward) / self.config.forward_speed_scale,
@@ -216,6 +296,7 @@ class NumericCarRacing(CarRacing):
                 *(extra if planned else waypoints),
                 *(waypoints if planned else extra),
                 *corridor,
+                *preview,
             ],
             dtype=np.float32,
         )
@@ -231,9 +312,13 @@ class NumericCarRacing(CarRacing):
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         start = (options or {}).get("corner_start")
         if start is not None and (
-            not isinstance(start, CornerStart)
+            not isinstance(start, (CornerStart, RoadStart))
             or self.config.observation_profile not in MAP_OBSERVATIONS
             or self.config.control_profile != "direct"
+            or (
+                isinstance(start, RoadStart)
+                and self.config.observation_profile not in ROAD_OBSERVATIONS
+            )
         ):
             raise ValueError("La salida de sector requiere el currículo de Formula directo.")
         self.geometry = None
@@ -267,7 +352,9 @@ class NumericCarRacing(CarRacing):
                 if not isinstance(self.car, FormulaCar):
                     angle, x, y = self.track[0][1:4]
                     speed = 0.0
-                    if self._corner_start is not None:
+                    if isinstance(self._corner_start, RoadStart):
+                        angle, x, y, speed = self._corner_start.pose(self._road_geometry())
+                    elif self._corner_start is not None:
                         reference = self.config.racing_reference or ReferenceDrivingConfig()
                         angle, x, y, speed = self._corner_start.pose(
                             self._road_geometry(), self._track_plan(reference)
@@ -293,6 +380,7 @@ class NumericCarRacing(CarRacing):
             ],
             dtype=np.float32,
         )
+        previous_native_reward = self.prev_reward
         observation, native_reward, _, _, _ = super().step(native_action)
         self.elapsed_steps += 1
         assert self.car is not None and self.geometry is not None
@@ -308,7 +396,9 @@ class NumericCarRacing(CarRacing):
             self._consecutive_off_track = 0
 
         x, y = self.car.hull.position
-        outside = abs(x) > PLAYFIELD or abs(y) > PLAYFIELD
+        outside = abs(x) > self.playfield or abs(y) > self.playfield
+        if self.track_layout is not None:
+            native_reward = -100.0 if outside else self.reward - previous_native_reward
         off_track_failure = self._consecutive_off_track >= self.config.off_track_grace_steps
         lap_time_profile = self.config.reward_profile in LAP_TIME_REWARDS
         reason = "running"
@@ -374,8 +464,13 @@ class NumericCarRacing(CarRacing):
         }
 
 
-def make_env(config: EnvironmentConfig, render_mode: str | None = None) -> gym.Env:
-    env = NumericCarRacing(config, render_mode=render_mode)
+def make_env(
+    config: EnvironmentConfig,
+    render_mode: str | None = None,
+    *,
+    track_layout: TrackLayout | None = None,
+) -> gym.Env:
+    env = NumericCarRacing(config, render_mode=render_mode, track_layout=track_layout)
     if config.control_profile == RACING_RESIDUAL:
         from f1_ai.residual_env import ResidualRacingEnv
 

@@ -61,6 +61,54 @@ def test_vectorized_training_saves_validation_and_checkpoint(tmp_path: Path):
     assert restored.observation_space.shape == (16,)
 
 
+def test_plateau_keeps_the_best_incident_free_checkpoint(tmp_path: Path, monkeypatch):
+    config = load_config("configs/formula-road-learning-fast-cuda.toml")
+    config = replace(
+        config,
+        environment=replace(config.environment, max_steps=12),
+        circuits=replace(config.circuits, validation=(100,)),
+        ppo=replace(
+            config.ppo,
+            device="cpu",
+            vec_env="dummy",
+            total_timesteps=128,
+            n_envs=1,
+            n_steps=16,
+            batch_size=16,
+            n_epochs=1,
+            eval_every=16,
+            corner_curriculum=False,
+            launch_curriculum=False,
+            road_start_curriculum=False,
+        ),
+    )
+    laps = iter([(49.0, 0), (48.7, 0), (43.0, 5), (48.64, 0)])
+
+    def evaluate(_environment, _agent, circuit_seed, *, agent_name):
+        seconds, locks = next(laps)
+        return {
+            "circuit_seed": circuit_seed,
+            "return": 1.0,
+            "steps": round(seconds * 50),
+            "coverage": 1.0,
+            "lap_complete": True,
+            "lap_time_seconds": seconds,
+            "off_track_steps": 0,
+            "off_track_fraction": 0.0,
+            "wheel_lock_steps": locks,
+        }
+
+    monkeypatch.setattr("f1_ai.callbacks.evaluate_episode", evaluate)
+    output = tmp_path / "plateau"
+    result = train(config, output, plateau_patience=2)
+    assert result["stop_reason"] == "validation_plateau"
+    assert result["actual_timesteps"] == 48
+    best = json.loads((output / "best_selection.json").read_text())
+    assert best["timesteps"] == 16
+    selected = load_model(output / "best_model.zip", config)
+    assert selected.num_timesteps == 16
+
+
 def test_warm_start_records_source_and_updates_weights(tmp_path: Path):
     config = load_config("configs/ppo.toml")
     initial = tmp_path / "initial"

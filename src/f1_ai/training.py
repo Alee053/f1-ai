@@ -7,32 +7,42 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, replace
+from functools import partial
 from pathlib import Path
 
 import numpy as np
 import torch
 from gymnasium import Env
 from gymnasium.wrappers import TransformReward
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv
 
 from f1_ai.artifacts import create_directory, provenance, write_json
-from f1_ai.callbacks import DrivingEvaluation
+from f1_ai.callbacks import PLATEAU_MIN_LAP_GAIN_SECONDS, DrivingEvaluation
 from f1_ai.config import (
     CORRIDOR_OBSERVATION,
     LAP_TIME_REWARDS,
     MAP_OBSERVATIONS,
     PLANNED_OBSERVATION,
     RACING_RESIDUAL,
+    ROAD_OBSERVATION,
+    ROAD_PREVIEW_OBSERVATION,
     EnvironmentConfig,
     ExperimentConfig,
     PPOConfig,
 )
 from f1_ai.curriculum import CornerCurriculum
 from f1_ai.environment import CircuitPool, make_env, observation_contract
-from f1_ai.rewards import FrontLockPenalty, RearSlipPenalty, RoadContactPenalty, TimeProgressReward
+from f1_ai.rewards import (
+    FrontLockPenalty,
+    NoProgressTermination,
+    RearSlipPenalty,
+    RoadContactPenalty,
+    RoadLearningReward,
+    TimeProgressReward,
+)
 from f1_ai.supervision import ActorRehearsal, RehearsalPPO
 
 
@@ -100,48 +110,66 @@ def create_model(config: ExperimentConfig, env: Env | VecEnv, *, rehearsal: bool
     return model
 
 
-def make_training_envs(config: ExperimentConfig) -> VecEnv:
+def make_training_environment(config: ExperimentConfig) -> Env:
     settings = config.ppo
-
-    def training_environment():
-        env = make_env(config.environment)
-        if settings.time_progress_mix:
-            env = TimeProgressReward(env, settings.time_progress_mix)
-        if settings.rear_slip_penalty:
-            env = RearSlipPenalty(env, settings.rear_slip_penalty)
-        if settings.front_lock_penalty:
-            env = FrontLockPenalty(env, settings.front_lock_penalty)
-        if settings.road_contact_penalty:
-            env = RoadContactPenalty(env, settings.road_contact_penalty)
-        env = CircuitPool(env, config.circuits.train, shuffle=True)
-        info_keywords = ()
-        if settings.corner_curriculum:
-            env = CornerCurriculum(
-                env,
-                settings.n_envs,
-                braking=settings.braking_curriculum,
-                recovery=settings.recovery_curriculum,
-                launch=settings.launch_curriculum,
-                wide_entry=settings.wide_entry_curriculum,
-            )
-            info_keywords = (
-                "training_sector",
-                "curriculum_stage",
-                "training_recovery",
-                "training_launch",
-                "training_wide_entry",
-                "training_wide_sector_seconds",
-            )
-        return TransformReward(
-            Monitor(env, info_keywords=info_keywords),
-            lambda reward: float(reward) * settings.reward_scale,
+    env = make_env(config.environment)
+    if settings.learning_pace_m_s:
+        env = RoadLearningReward(
+            env,
+            settings.learning_pace_m_s,
+            straight_pace_m_s=settings.learning_straight_pace_m_s,
         )
+    if settings.time_progress_mix:
+        env = TimeProgressReward(env, settings.time_progress_mix)
+    if settings.rear_slip_penalty:
+        env = RearSlipPenalty(env, settings.rear_slip_penalty)
+    if settings.front_lock_penalty:
+        env = FrontLockPenalty(env, settings.front_lock_penalty)
+    if settings.road_contact_penalty:
+        env = RoadContactPenalty(env, settings.road_contact_penalty)
+    env = CircuitPool(env, config.circuits.train, shuffle=True)
+    info_keywords = ()
+    if settings.corner_curriculum:
+        env = CornerCurriculum(
+            env,
+            settings.n_envs,
+            braking=settings.braking_curriculum,
+            recovery=settings.recovery_curriculum,
+            launch=settings.launch_curriculum,
+            wide_entry=settings.wide_entry_curriculum,
+            road_starts=settings.road_start_curriculum,
+            road_stage_scale=settings.road_curriculum_scale,
+            road_sector_bonus=12.0 if settings.learning_pace_m_s else 0.0,
+        )
+        info_keywords = (
+            "training_sector",
+            "curriculum_stage",
+            "training_recovery",
+            "training_launch",
+            "training_wide_entry",
+            "training_wide_sector_seconds",
+        )
+    if settings.no_progress_steps:
+        if settings.learning_pace_m_s:
+            env = NoProgressTermination(
+                env, settings.no_progress_steps, cost=RoadLearningReward.stall_cost
+            )
+        else:
+            env = NoProgressTermination(env, settings.no_progress_steps)
+    if settings.no_progress_steps or settings.learning_pace_m_s:
+        info_keywords = (*info_keywords, "termination_reason")
+    return TransformReward(
+        Monitor(env, info_keywords=info_keywords),
+        lambda reward: float(reward) * settings.reward_scale,
+    )
 
-    factories = [training_environment for _ in range(settings.n_envs)]
+
+def make_training_envs(config: ExperimentConfig) -> VecEnv:
+    factories = [partial(make_training_environment, config)] * config.ppo.n_envs
     # spawn evita heredar un contexto CUDA al crear los procesos de física.
     return (
         SubprocVecEnv(factories, start_method="spawn")
-        if settings.vec_env == "subproc"
+        if config.ppo.vec_env == "subproc"
         else DummyVecEnv(factories)
     )
 
@@ -161,9 +189,16 @@ def _initialize_policy(
         environment.observation_profile == CORRIDOR_OBSERVATION
         and source_metadata["observation_version"] == 4
     )
+    extend_road_preview = (
+        environment.observation_profile == ROAD_PREVIEW_OBSERVATION
+        and recorded.observation_profile == ROAD_OBSERVATION
+    )
     if extend_corridor:
         environment = replace(environment, observation_profile=PLANNED_OBSERVATION)
         transfers.append("zero_initialized_corridor_inputs")
+    if extend_road_preview:
+        environment = replace(environment, observation_profile=ROAD_OBSERVATION)
+        transfers.append("zero_initialized_road_preview_inputs")
     if (
         environment.observation_profile in MAP_OBSERVATIONS
         and environment.observation_profile == recorded.observation_profile
@@ -184,7 +219,7 @@ def _initialize_policy(
     if source.policy.squash_output != model.policy.squash_output:
         raise ValueError("La transformación de acciones de la inicialización no coincide.")
     weights = source.policy.state_dict()
-    if extend_corridor:
+    if extend_corridor or extend_road_preview:
         added = model.observation_space.shape[0] - source.observation_space.shape[0]
         for network in ("policy_net", "value_net"):
             key = f"mlp_extractor.{network}.0.weight"
@@ -193,6 +228,25 @@ def _initialize_policy(
     with torch.no_grad():
         model.policy.log_std.fill_(config.ppo.log_std_init)
     return tuple(transfers)
+
+
+def _freeze_steering(model: PPO) -> None:
+    policy = model.policy
+    if (
+        list(policy.features_extractor.parameters())
+        or policy.action_net.weight.shape[0] != 2
+        or policy.log_std.shape[-1] != 2
+        or any(group["weight_decay"] != 0 for group in policy.optimizer.param_groups)
+    ):
+        raise ValueError("pedal_only requiere el actor MLP directo de PPO.")
+    policy.mlp_extractor.policy_net.requires_grad_(False)
+    # La fila 0 calcula el giro y la fila 1 calcula el pedal.
+    weight_mask = policy.action_net.weight.new_tensor([[0.0], [1.0]])
+    bias_mask = policy.action_net.bias.new_tensor([0.0, 1.0])
+    noise_mask = policy.log_std.new_tensor([0.0, 1.0])
+    policy.action_net.weight.register_hook(lambda gradient: gradient * weight_mask)
+    policy.action_net.bias.register_hook(lambda gradient: gradient * bias_mask)
+    policy.log_std.register_hook(lambda gradient: gradient * noise_mask)
 
 
 def train(
@@ -204,17 +258,28 @@ def train(
     resume_model: Path | None = None,
     rehearsal_dataset: Path | None = None,
     transfer_vehicle: bool = False,
+    plateau_patience: int = 0,
 ) -> dict:
+    if type(plateau_patience) is not int or plateau_patience < 0:
+        raise ValueError("--plateau-evals debe ser un entero no negativo.")
+    if plateau_patience and (smoke or config.environment.reward_profile not in LAP_TIME_REWARDS):
+        raise ValueError("--plateau-evals requiere entrenamiento con tiempos de vuelta.")
     if initial_model is not None and resume_model is not None:
         raise ValueError("Elija inicialización de pesos o reanudación, no ambas.")
     if transfer_vehicle and initial_model is None:
         raise ValueError("--transfer-vehicle requiere --initial-model.")
     if rehearsal_dataset is not None and config.environment.control_profile == RACING_RESIDUAL:
         raise ValueError("El repaso BC usa mandos directos, no correcciones de la trazada.")
+    if config.ppo.rehearsal_fade_steps and rehearsal_dataset is None:
+        raise ValueError("rehearsal_fade_steps requiere un dataset de repaso.")
     if resume_model is not None and smoke:
         raise ValueError("La prueba smoke no permite reanudar un entrenamiento.")
     source_path = resume_model if resume_model is not None else initial_model
+    if config.ppo.pedal_only and source_path is None:
+        raise ValueError("pedal_only requiere un checkpoint con giro aprendido.")
     source_metadata = read_model_metadata(source_path) if source_path is not None else {}
+    if source_metadata.get("kind") == "sac":
+        raise ValueError("Un checkpoint SAC no puede inicializar una política PPO.")
     if resume_model is not None:
         if bool(source_metadata.get("rehearsal")) != (rehearsal_dataset is not None):
             raise ValueError(
@@ -262,6 +327,12 @@ def train(
         if config.environment.reward_profile in LAP_TIME_REWARDS
         else "completed_laps, coverage, lap_time, return"
     )
+    if plateau_patience:
+        metadata["checkpoint_selection"] = "completed_laps, incident_free_laps, paired_lap_gain"
+        metadata["plateau"] = {
+            "patience_evaluations": plateau_patience,
+            "min_lap_gain_seconds": PLATEAU_MIN_LAP_GAIN_SECONDS,
+        }
     output = create_directory(output)
     torch.set_num_threads(settings.torch_threads)
     envs = make_training_envs(config)
@@ -294,6 +365,8 @@ def train(
             )
             if transfers:
                 metadata["initial_policy"]["transfer"] = transfers
+        if settings.pedal_only:
+            _freeze_steering(model)
         if rehearsal_dataset is not None:
             from f1_ai.imitation import load_dataset
 
@@ -307,6 +380,7 @@ def train(
             model.actor_rehearsal = ActorRehearsal(
                 model, data, seed=settings.seed, learning_rate=settings.rehearsal_learning_rate
             )
+            model.rehearsal_fade_steps = settings.rehearsal_fade_steps
             metadata["training_variant"] = "ppo_rehearsal"
             metadata["rehearsal"] = {
                 "dataset": str(rehearsal_dataset),
@@ -315,6 +389,7 @@ def train(
                 "batch_size": 256,
                 "updates_per_rollout": 4,
                 "learning_rate": settings.rehearsal_learning_rate,
+                "fade_steps": settings.rehearsal_fade_steps,
                 "critic_updated": False,
                 "log_std_updated": False,
                 "optimizer_restored": False,
@@ -347,14 +422,14 @@ def train(
         before = torch.cat(
             [parameter.detach().flatten().clone() for parameter in model.policy.parameters()]
         )
-        callbacks = []
-        if not smoke:
-            callbacks = [DrivingEvaluation(config, output)]
+        evaluation = (
+            None if smoke else DrivingEvaluation(config, output, plateau_patience=plateau_patience)
+        )
         try:
             with _interrupt_on_sigterm():
                 model.learn(
                     total_timesteps=settings.total_timesteps - starting_timesteps,
-                    callback=callbacks,
+                    callback=evaluation,
                     reset_num_timesteps=resume_model is None,
                 )
         except KeyboardInterrupt as error:
@@ -389,12 +464,14 @@ def train(
         if model.device.type == "cuda":
             torch.cuda.synchronize(model.device)
         elapsed = time.perf_counter() - started
+        plateau = evaluation.plateau if evaluation is not None else None
         results = {
             "kind": "integration_smoke" if smoke else "training",
             "requested_timesteps": settings.total_timesteps,
             "actual_timesteps": model.num_timesteps,
             "starting_timesteps": starting_timesteps,
             "trained_timesteps": model.num_timesteps - starting_timesteps,
+            "stop_reason": "validation_plateau" if plateau and plateau.reached else "budget",
             "wall_seconds": elapsed,
             "steps_per_second": (model.num_timesteps - starting_timesteps) / elapsed,
             "policy_parameter_delta_l2": float(torch.linalg.vector_norm(after - before)),
@@ -422,7 +499,7 @@ def load_model(
     *,
     device: str | None = None,
     env: Env | VecEnv | None = None,
-) -> PPO:
+) -> PPO | SAC:
     """Carga exclusivamente un checkpoint local de confianza con metadatos compatibles."""
     metadata = read_model_metadata(path)
     if metadata["observation_version"] != observation_contract(config.environment)[0]:
@@ -430,9 +507,12 @@ def load_model(
     recorded_environment = EnvironmentConfig(**metadata["configuration"]["environment"])
     if asdict(recorded_environment) != asdict(config.environment):
         raise ValueError("La configuración de evaluación no coincide con la del modelo.")
-    if metadata["kind"] not in {"ppo", "ppo_smoke", "behavior_cloning", "dagger"}:
+    if metadata["kind"] not in {"ppo", "ppo_smoke", "behavior_cloning", "dagger", "sac"}:
         raise ValueError("Los metadatos no corresponden a un entrenamiento de este proyecto.")
     torch.set_num_threads(config.ppo.torch_threads)
     requested_device = config.ppo.device if device is None else device
-    algorithm = RehearsalPPO if metadata.get("training_variant") == "ppo_rehearsal" else PPO
+    if metadata["kind"] == "sac":
+        algorithm = SAC
+    else:
+        algorithm = RehearsalPPO if metadata.get("training_variant") == "ppo_rehearsal" else PPO
     return algorithm.load(path, device=require_device(requested_device), env=env)

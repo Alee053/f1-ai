@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from f1_ai.geometry import CircuitGeometry, LapProgress
+from f1_ai.geometry import CircuitGeometry, LapProgress, TurnPreview
 
 
 @pytest.fixture
@@ -14,6 +14,14 @@ def test_projection_and_lookahead_wrap_around_finish(square):
     assert projection.distance == pytest.approx(10)
     assert projection.lateral == pytest.approx(2)
     np.testing.assert_allclose(square.sample(np.array([85, -5])), [[0, 5], [5, 0]])
+
+
+def test_turn_preview_distinguishes_a_long_straight_from_corner_entry():
+    road = CircuitGeometry(np.array([[0, 0], [90, 0], [90, 80], [0, 80]]))
+    turns = TurnPreview(road)
+    assert turns.ahead(10, 50) == 0
+    assert turns.ahead(60, 50) == pytest.approx(np.pi / 2)
+    assert turns.ahead(road.length - 20, 50) == pytest.approx(np.pi / 2)
 
 
 def test_forward_lap_needs_finish_crossing_and_coverage():
