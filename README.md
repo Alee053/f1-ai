@@ -1,12 +1,12 @@
 # Agente de conducción en carreras 2D
 
 Avance del proyecto de Inteligencia Artificial SIS-252, UCB Cochabamba, gestión II-2026.
-El objetivo principal es entrenar y evaluar una política neuronal mediante imitación
-y ajuste con PPO en un entorno existente. Gymnasium CarRacing aporta el circuito
-y la física Box2D del perfil `classic`, utilizado en los experimentos iniciales.
-La etapa actual usa `formula-v1`, con dinámica planar en unidades SI, mandos
-directos y práctica de frenada. Sus parámetros aproximan un monoplaza.
+El proyecto entrena y evalúa una política neuronal para completar vueltas y reducir
+su tiempo. Los primeros experimentos usan el perfil `classic` de Gymnasium
+CarRacing con Box2D. La versión de entrega usa `formula-v1`, un modelo planar
+simplificado de un monoplaza con mandos directos de giro, acelerador y freno.
 
+- [Resultados de la entrega](#resultados-de-la-entrega)
 - [Política con mandos directos y currículo](#política-con-mandos-directos)
 - [Conducción con mando Xbox](#conducción-manual-con-xbox)
 - [Reproducción cenital o en perspectiva](#v%C3%ADdeo-de-la-pol%C3%ADtica)
@@ -21,8 +21,8 @@ los perfiles existentes conservan CPU como dispositivo predeterminado. La ejecuc
 CUDA requiere una GPU NVIDIA y un controlador compatible. No se requieren servicios
 pagados ni instalaciones globales de Python o del toolkit CUDA.
 
-Los informes y documentos permanecen en `docs/` y no se versionan. Los experimentos
-y modelos se guardan en `runs/`, también excluido de Git.
+Los documentos de trabajo en `docs/`, los PDF en `output/pdf/` y los resultados,
+modelos y vídeos de `runs/` se guardan fuera de Git.
 
 ## Instalación y comprobaciones
 
@@ -858,6 +858,31 @@ uv run f1-ai --config "$config" evaluate --agents sac --split validation \
   --model runs/sac-road/best_model.zip --output runs/sac-road-validation
 uv run f1-ai --config "$config" train-sac --seed 73 --timesteps 786432 \
   --resume-model runs/sac-road/model.zip --output runs/sac-road-continuation
+```
+
+### Resultados de la entrega
+
+El modelo de la entrega se seleccionó a las 344.064 interacciones de una
+continuación de PPO desde `road-v5`. Con `road-preview-v6`, la red decide el
+giro y el pedal a partir del estado del coche y la geometría de la pista.
+
+| Validación | PPO anterior (`road-v5`) | PPO seleccionado (`road-preview-v6`) |
+| --- | ---: | ---: |
+| Vueltas completadas sin salidas | 29/29 | 29/29 |
+| Vueltas sin salidas ni bloqueos | 28/29 | 28/29 |
+| Tiempo medio en las mismas 28 vueltas sin incidentes | 47,15 s | 46,79 s |
+
+El modelo seleccionado redujo el tiempo en las 28 vueltas comparables. En
+la prueba de transferencia a Mónaco, recorrió el 38,3 % del circuito sin
+reentrenamiento. Las semillas 200 a 204 siguen reservadas para la prueba final.
+
+Con la configuración y el checkpoint locales de la corrida, se puede exportar
+una vuelta en vista cenital para la semilla 137.
+
+```bash
+uv run f1-ai --config runs/road-lap-pace/preview.toml replay \
+  --model runs/road-lap-pace/ppo-v6/best_model.zip --seed 137 \
+  --camera top --device cpu --output runs/replays/entrega-137.mp4
 ```
 
 ### Currículo de curvas
